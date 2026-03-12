@@ -83,6 +83,72 @@ function resolveRedirectUrl(
   }
 }
 
+function parseCookieName(cookiePair: string): string {
+  const eq = cookiePair.indexOf("=");
+  if (eq <= 0) {
+    return cookiePair.trim().toLowerCase();
+  }
+  return cookiePair.slice(0, eq).trim().toLowerCase();
+}
+
+function readSetCookies(headers: unknown): string[] {
+  if (!headers || typeof headers !== "object") {
+    return [];
+  }
+  const map = headers as Record<string, unknown>;
+  const raw = map["set-cookie"] ?? map["Set-Cookie"] ?? null;
+  if (Array.isArray(raw)) {
+    return raw
+      .map(item => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean);
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    return [raw.trim()];
+  }
+  return [];
+}
+
+function parseCookieHeaderValue(headers: unknown): string | null {
+  if (!headers || typeof headers !== "object") {
+    return null;
+  }
+  const map = headers as Record<string, unknown>;
+  const raw = map.cookie ?? map.Cookie ?? null;
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const value = raw.trim();
+  return value || null;
+}
+
+function mergeCookieJar(
+  existingJar: Map<string, string>,
+  incomingSetCookies: string[],
+  existingCookieHeader: string | null
+): Map<string, string> {
+  const jar = new Map(existingJar);
+
+  if (existingCookieHeader) {
+    const fromHeader = existingCookieHeader
+      .split(";")
+      .map(item => item.trim())
+      .filter(Boolean);
+    for (const pair of fromHeader) {
+      jar.set(parseCookieName(pair), pair);
+    }
+  }
+
+  for (const setCookie of incomingSetCookies) {
+    const pair = setCookie.split(";", 1)[0]?.trim();
+    if (!pair) {
+      continue;
+    }
+    jar.set(parseCookieName(pair), pair);
+  }
+
+  return jar;
+}
+
 function buildInventoryProtocolVariant(urlRaw: string, protocol: "http" | "https"): string | null {
   try {
     const url = new URL(urlRaw);
@@ -287,10 +353,10 @@ async function probeProxyUrl(proxy: ProxyConfig, url: string): Promise<{
   }
 }
 
-async function sendRouteRequest<T>(
+async function sendRouteRequest(
   config: AxiosRequestConfig,
   route: ProxyConfig | null
-): Promise<AxiosResponse<T>> {
+): Promise<AxiosResponse> {
   const configuredMaxRedirects =
     typeof config.maxRedirects === "number" && Number.isFinite(config.maxRedirects)
       ? Math.max(0, Math.floor(config.maxRedirects))
@@ -298,16 +364,33 @@ async function sendRouteRequest<T>(
 
   let remainingManualRedirects = configuredMaxRedirects;
   let currentConfig: AxiosRequestConfig = { ...config };
+  let cookieJar = new Map<string, string>();
 
   while (true) {
-    const response = await axios.request<T>({
+    const currentHeaders =
+      currentConfig.headers && typeof currentConfig.headers === "object"
+        ? { ...(currentConfig.headers as Record<string, unknown>) }
+        : {};
+
+    if (cookieJar.size > 0) {
+      currentHeaders.Cookie = Array.from(cookieJar.values()).join("; ");
+    }
+
+    const response = await axios.request({
       ...currentConfig,
       // Handle redirects manually so route errors on HTTPS CONNECT do not get swallowed
       // by axios internal redirect flow.
       maxRedirects: 0,
       proxy: route ? route : false,
       validateStatus: () => true,
+      headers: currentHeaders as AxiosRequestConfig["headers"],
     });
+
+    cookieJar = mergeCookieJar(
+      cookieJar,
+      readSetCookies(response.headers),
+      parseCookieHeaderValue(currentConfig.headers)
+    );
 
     const locationHeader = getHeaderValue(response.headers, "location");
     const redirectedTo = resolveRedirectUrl(
@@ -571,7 +654,7 @@ export async function httpRequest<T = unknown>(
       const requestAttemptStartedAt = Date.now();
 
       try {
-        const response = await sendRouteRequest<T>(config, route);
+        const response = (await sendRouteRequest(config, route)) as AxiosResponse<T>;
         const durationMs = Date.now() - requestAttemptStartedAt;
 
         if (isRetryableStatus(response.status)) {
