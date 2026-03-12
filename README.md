@@ -72,12 +72,14 @@ make migrate
 - `make photo-sync` — запуск photo-sync в контейнері.
 - `make pipeline` — одноразовий повний цикл.
 - `make proxy-check` — перевірка проксі-пулу перед запуском.
+- `make fresh-test` — повний чистий тестовий цикл (`db-drop -> migrate -> ingest(1000) -> photo:cluster -> SQL summary`).
 
 Команди для "чистого" запуску:
 
 - `make db-reset` — швидке очищення runtime-таблиць (дані лотів/фото/рани).
 - `make db-drop` — повний drop/recreate двох БД.
 - `make clean-run` — `db-reset -> ingest -> photo-sync`.
+- `make fresh-test` — рекомендований відтворюваний бенч з нуля через `scripts/fresh-test.sh`.
 
 ## Команди
 
@@ -91,6 +93,19 @@ make migrate
 - `npm run scheduler:start` — планувальник (5 запусків/день + retry cron).
 - `npm run db:reset` — швидке очищення runtime-таблиць через Docker MySQL.
 - `npm run db:drop` — повний drop/recreate двох БД через Docker MySQL.
+- `./scripts/fresh-test.sh` — один командний сценарій чистого тесту з підсумковими SQL-метриками.
+
+Швидкий стабільний старт з нуля (рекомендовано для бенчів):
+
+```bash
+make fresh-test
+```
+
+Налаштування прогону через ENV (приклад):
+
+```bash
+INGEST_MAX_ROWS=1000 PHOTO_WORKER_TOTAL=3 PHOTO_FETCH_CONCURRENCY=80 PROXY_PREFLIGHT_TOP_N=40 make fresh-test
+```
 
 Контроль кількості лотів у бойовому ingest (без локальних файлів):
 

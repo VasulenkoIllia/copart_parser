@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+INGEST_MAX_ROWS="${INGEST_MAX_ROWS:-1000}"
+PHOTO_WORKER_TOTAL="${PHOTO_WORKER_TOTAL:-3}"
+PHOTO_BATCH_SIZE="${PHOTO_BATCH_SIZE:-1000}"
+PHOTO_FETCH_CONCURRENCY="${PHOTO_FETCH_CONCURRENCY:-80}"
+PHOTO_HTTP_MODE="${PHOTO_HTTP_MODE:-proxy}"
+PROXY_LIST_FILE="${PROXY_LIST_FILE:-./proxies.txt}"
+PROXY_PREFLIGHT_TOP_N="${PROXY_PREFLIGHT_TOP_N:-40}"
+PROXY_PREFLIGHT_CONCURRENCY="${PROXY_PREFLIGHT_CONCURRENCY:-40}"
+PROXY_PREFLIGHT_TIMEOUT_MS="${PROXY_PREFLIGHT_TIMEOUT_MS:-12000}"
+PROXY_PREFLIGHT_MIN_WORKING="${PROXY_PREFLIGHT_MIN_WORKING:-20}"
+PHOTO_HTTP_TIMEOUT_MS="${PHOTO_HTTP_TIMEOUT_MS:-12000}"
+MYSQL_POOL_MIN="${MYSQL_POOL_MIN:-2}"
+MYSQL_POOL_MAX="${MYSQL_POOL_MAX:-20}"
+PHOTO_ENDPOINT_RETRIES="${PHOTO_ENDPOINT_RETRIES:-1}"
+PHOTO_IMAGE_RETRIES="${PHOTO_IMAGE_RETRIES:-1}"
+PHOTO_VALIDATE_BY_HEAD_FIRST="${PHOTO_VALIDATE_BY_HEAD_FIRST:-false}"
+
+started_epoch="$(date +%s)"
+
+echo "== START $(date -Is) =="
+echo "config: INGEST_MAX_ROWS=${INGEST_MAX_ROWS}, PHOTO_WORKER_TOTAL=${PHOTO_WORKER_TOTAL}, PHOTO_FETCH_CONCURRENCY=${PHOTO_FETCH_CONCURRENCY}, PHOTO_HTTP_MODE=${PHOTO_HTTP_MODE}"
+
+echo "== STEP 1/6: Ensure MySQL is up =="
+docker compose up -d mysql
+
+echo "== STEP 2/6: Drop and recreate databases =="
+./scripts/db-drop.sh
+
+echo "== STEP 3/6: Run migrations =="
+docker compose run --rm app node dist/index.js db:migrate
+
+echo "== STEP 4/6: Ingest CSV (direct, limited rows) =="
+docker compose run --rm \
+  -e HTTP_MODE=direct \
+  -e INGEST_MAX_ROWS="${INGEST_MAX_ROWS}" \
+  app node dist/index.js ingest:csv
+
+echo "== STEP 5/6: Pre-check due lots and shard split =="
+docker compose exec -T mysql sh -lc "
+mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -e \"
+SELECT COUNT(*) AS lots_total FROM copart_core.lots;
+SELECT COUNT(*) AS due_total
+FROM copart_core.lots
+WHERE deleted_at IS NULL
+  AND image_url IS NOT NULL
+  AND (
+    photo_status = 'unknown'
+    OR (photo_status = 'missing' AND (next_photo_retry_at IS NULL OR next_photo_retry_at <= CURRENT_TIMESTAMP(3)))
+    OR (photo_status = 'partial' AND (next_photo_retry_at IS NULL OR next_photo_retry_at <= CURRENT_TIMESTAMP(3)))
+  );
+SELECT MOD(lot_number, ${PHOTO_WORKER_TOTAL}) AS worker_shard, COUNT(*) AS due_lots
+FROM copart_core.lots
+WHERE deleted_at IS NULL
+  AND image_url IS NOT NULL
+  AND photo_status = 'unknown'
+GROUP BY worker_shard
+ORDER BY worker_shard;
+\"
+"
+
+echo "== STEP 6/6: Run photo cluster =="
+docker compose run --rm \
+  -e HTTP_MODE="${PHOTO_HTTP_MODE}" \
+  -e PROXY_LIST_FILE="${PROXY_LIST_FILE}" \
+  -e PROXY_PREFLIGHT_TOP_N="${PROXY_PREFLIGHT_TOP_N}" \
+  -e PROXY_PREFLIGHT_CONCURRENCY="${PROXY_PREFLIGHT_CONCURRENCY}" \
+  -e PROXY_PREFLIGHT_TIMEOUT_MS="${PROXY_PREFLIGHT_TIMEOUT_MS}" \
+  -e PROXY_PREFLIGHT_MIN_WORKING="${PROXY_PREFLIGHT_MIN_WORKING}" \
+  -e PHOTO_WORKER_TOTAL="${PHOTO_WORKER_TOTAL}" \
+  -e PHOTO_BATCH_SIZE="${PHOTO_BATCH_SIZE}" \
+  -e PHOTO_FETCH_CONCURRENCY="${PHOTO_FETCH_CONCURRENCY}" \
+  -e PHOTO_VALIDATE_BY_HEAD_FIRST="${PHOTO_VALIDATE_BY_HEAD_FIRST}" \
+  -e PHOTO_ENDPOINT_RETRIES="${PHOTO_ENDPOINT_RETRIES}" \
+  -e PHOTO_IMAGE_RETRIES="${PHOTO_IMAGE_RETRIES}" \
+  -e PHOTO_HTTP_TIMEOUT_MS="${PHOTO_HTTP_TIMEOUT_MS}" \
+  -e PHOTO_LOG_LOT_RESULTS=false \
+  -e MYSQL_POOL_MIN="${MYSQL_POOL_MIN}" \
+  -e MYSQL_POOL_MAX="${MYSQL_POOL_MAX}" \
+  app node dist/index.js photo:cluster
+
+echo "== RESULT SUMMARY =="
+docker compose exec -T mysql sh -lc "
+mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -e \"
+SELECT id,status,lots_scanned,lots_processed,lots_ok,lots_partial,lots_missing,images_upserted,
+       ROUND(TIMESTAMPDIFF(MICROSECOND,started_at,finished_at)/1000000,2) AS duration_sec,error_message
+FROM copart_core.photo_runs
+ORDER BY id DESC
+LIMIT 5;
+
+SELECT id,status,rows_total,rows_valid,rows_inserted,rows_updated,rows_unchanged,
+       ROUND(TIMESTAMPDIFF(MICROSECOND,started_at,finished_at)/1000000,2) AS duration_sec,error_message
+FROM copart_core.ingest_runs
+ORDER BY id DESC
+LIMIT 3;
+
+SET @s=(SELECT started_at FROM copart_core.photo_runs ORDER BY id DESC LIMIT 1);
+SELECT attempt_type, COALESCE(CAST(http_status AS CHAR), 'NULL') AS http_status, COUNT(*) cnt
+FROM copart_media.photo_fetch_attempts
+WHERE attempted_at>=@s
+GROUP BY attempt_type, http_status
+ORDER BY attempt_type, cnt DESC;
+
+SELECT attempt_type, error_code, COUNT(*) cnt
+FROM copart_media.photo_fetch_attempts
+WHERE attempted_at>=@s
+  AND error_code IS NOT NULL
+GROUP BY attempt_type, error_code
+ORDER BY cnt DESC
+LIMIT 20;
+\"
+"
+
+ended_epoch="$(date +%s)"
+duration_sec="$((ended_epoch - started_epoch))"
+echo "== END $(date -Is) total_sec=${duration_sec} =="

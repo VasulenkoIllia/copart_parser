@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 .PHONY: up down build rebuild ps logs logs-app logs-db scheduler \
 	migrate ingest photo-sync photo-cluster pipeline proxy-check \
-	db-reset db-drop db-shell clean-run
+	db-reset db-drop db-shell clean-run fresh-test
 
 up:
 	docker compose up -d mysql app
@@ -59,3 +59,6 @@ db-shell:
 	docker compose exec mysql mysql -uroot -p$$MYSQL_ROOT_PASSWORD
 
 clean-run: db-reset ingest photo-sync
+
+fresh-test:
+	./scripts/fresh-test.sh

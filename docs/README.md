@@ -43,6 +43,7 @@
 | 2026-03-12 | Ops command layer | Done | Додано `Makefile` (`up/down/migrate/ingest/photo-sync/proxy-check/db-reset/db-drop/clean-run`) |
 | 2026-03-12 | Photo cluster command | Done | Додано `photo:cluster` для запуску N воркерів у 1 контейнері з shard-by-worker без дублювань |
 | 2026-03-12 | Fast DB cleanup scripts | Done | Додано `scripts/db-reset.sh` (truncate) і `scripts/db-drop.sh` (drop/recreate) |
+| 2026-03-12 | Reproducible fresh benchmark script | Done | Додано `scripts/fresh-test.sh` + `make fresh-test` (`db-drop -> migrate -> ingest -> photo:cluster -> SQL summary`) |
 | 2026-03-12 | Extended diagnostics logging | Done | Логи duration/progress/retry/backoff/slow HTTP для кращої діагностики |
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |
 | 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |
@@ -78,6 +79,7 @@
 | 2026-03-12 | `make db-drop && make migrate` | Passed | Повний drop/recreate і повторна міграція БД працюють |
 | 2026-03-12 | `make proxy-check` | Passed | Команда керування з контейнера працює коректно |
 | 2026-03-12 | `npm run build` після redirect hardening | Passed | TypeScript компіляція успішна |
+| 2026-03-12 | `bash -n scripts/fresh-test.sh` | Passed | Синтаксис нового сценарію clean benchmark валідний |
 
 ## В роботі
 
