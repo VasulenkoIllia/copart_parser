@@ -1,11 +1,11 @@
 import cron from "node-cron";
 import env from "../../config/env";
 import { logger } from "../../lib/logger";
-import { runCsvIngest } from "../ingest/csv-ingest";
 import { runPhotoSync } from "../photo/photo-sync";
+import { runFullPipelineOnce } from "../pipeline/run-once";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 
-async function safeRun(name: string, action: () => Promise<void>): Promise<void> {
+async function safeRun(name: string, action: () => Promise<unknown>): Promise<void> {
   const startedAt = Date.now();
   logger.info(`${name} job started`);
   try {
@@ -23,9 +23,11 @@ async function safeRun(name: string, action: () => Promise<void>): Promise<void>
 }
 
 export async function startScheduler(): Promise<void> {
+  const photoRetryCron = env.schedule.photoRetryCron.trim();
+
   logger.info("Scheduler started", {
     ingestCron: env.schedule.ingestCron,
-    photoRetryCron: env.schedule.photoRetryCron,
+    photoRetryCron: photoRetryCron || "disabled",
     timezone: env.app.tz,
     runOnStart: env.schedule.runOnStart,
   });
@@ -33,26 +35,27 @@ export async function startScheduler(): Promise<void> {
   cron.schedule(
     env.schedule.ingestCron,
     () => {
-      void safeRun("CSV_INGEST", runCsvIngest);
+      void safeRun("PIPELINE_REFRESH", runFullPipelineOnce);
     },
     {
       timezone: env.app.tz,
     }
   );
 
-  cron.schedule(
-    env.schedule.photoRetryCron,
-    () => {
-      void safeRun("PHOTO_SYNC", runPhotoSync);
-    },
-    {
-      timezone: env.app.tz,
-    }
-  );
+  if (photoRetryCron) {
+    cron.schedule(
+      photoRetryCron,
+      () => {
+        void safeRun("PHOTO_SYNC", runPhotoSync);
+      },
+      {
+        timezone: env.app.tz,
+      }
+    );
+  }
 
   if (env.schedule.runOnStart) {
-    await safeRun("CSV_INGEST_ON_START", runCsvIngest);
-    await safeRun("PHOTO_SYNC_ON_START", runPhotoSync);
+    await safeRun("PIPELINE_REFRESH_ON_START", runFullPipelineOnce);
   }
 
   if (env.telegram.sendSuccessSummary) {
@@ -60,7 +63,7 @@ export async function startScheduler(): Promise<void> {
       [
         "[SCHEDULER] started",
         `ingest_cron=${env.schedule.ingestCron}`,
-        `photo_retry_cron=${env.schedule.photoRetryCron}`,
+        `photo_retry_cron=${photoRetryCron || "disabled"}`,
         `timezone=${env.app.tz}`,
       ].join("\n")
     );

@@ -4,10 +4,7 @@ export interface IngestCandidate {
   lotNumber: number;
   yardNumber: number | null;
   imageUrl: string | null;
-  sourceLastUpdatedAt: Date | null;
-  sourceCreatedAt: Date | null;
   rowHash: string;
-  rawPayload: CsvRecord;
 }
 
 export interface IngestCounters {

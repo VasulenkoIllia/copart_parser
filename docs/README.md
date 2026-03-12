@@ -45,7 +45,11 @@
 | 2026-03-12 | Fast DB cleanup scripts | Done | Додано `scripts/db-reset.sh` (truncate) і `scripts/db-drop.sh` (drop/recreate) |
 | 2026-03-12 | Reproducible fresh benchmark script | Done | Додано `scripts/fresh-test.sh` + `make fresh-test` (`db-drop -> migrate -> ingest -> photo:cluster -> SQL summary`) |
 | 2026-03-12 | Auto proxy selection for photo cluster | Done | `photo:cluster` може взяти 1 реальний photo URL з БД, прогнати preflight по ньому і передати воркерам тільки top-N проксі |
-| 2026-03-12 | FULL-only + URL-hash cache + error-only attempts | Done | Фото-пайплайн перевіряє/зберігає тільки `full`, пропускає повторний GET при cache-hit (`ok/full_size/url_hash`), у `photo_fetch_attempts` пишуться лише 404/error |
+| 2026-03-12 | HD-only + URL-hash cache + error-only attempts | Done | Фото-пайплайн перевіряє/зберігає тільки `hd`, пропускає повторний GET при cache-hit (`ok/full_size/url_hash`), у `photo_fetch_attempts` пишуться лише 404/error |
+| 2026-03-13 | Snapshot-core + persistent-media selection | Done | `copart_core.lots` став snapshot поточного CSV, `copart_media` не чиститься, `photo:sync` бере тільки лоти без валідних фото в media |
+| 2026-03-13 | Remove partial photo state | Done | Активна runtime-модель спрощена до `unknown -> ok/missing`, старий `partial` прибрано з робочої схеми |
+| 2026-03-13 | Remove auto cleanup from media runtime | Done | Після `404` більше немає hard-delete/cleanup з `copart_media`; media використовується як persistent store фото |
+| 2026-03-13 | Benchmark defaults aligned to server profile | Done | `fresh-test.sh` за замовчуванням: `1000 lots`, `12 workers`, `150 concurrency`, `top-300 proxies`, `min-working=250` |
 | 2026-03-12 | Extended diagnostics logging | Done | Логи duration/progress/retry/backoff/slow HTTP для кращої діагностики |
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |
 | 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |
@@ -82,6 +86,9 @@
 | 2026-03-12 | `make proxy-check` | Passed | Команда керування з контейнера працює коректно |
 | 2026-03-12 | `npm run build` після redirect hardening | Passed | TypeScript компіляція успішна |
 | 2026-03-12 | `bash -n scripts/fresh-test.sh` | Passed | Синтаксис нового сценарію clean benchmark валідний |
+| 2026-03-13 | `CSV_LOCAL_FILE=/tmp/copart_small_a.csv INGEST_MAX_ROWS=0 npm run ingest:csv` | Passed | Snapshot ingest зберіг тільки поточний CSV у core, media не чистилась |
+| 2026-03-13 | `CSV_LOCAL_FILE=/tmp/copart_small_b.csv INGEST_MAX_ROWS=0 npm run ingest:csv` | Passed | Другий snapshot prune прибрав відсутній лот тільки з core; media лишилась без cleanup |
+| 2026-03-13 | Isolated verify DB scenario (`copart_core_verify` / `copart_media_verify`) | Passed | Після seed одного media-лота кандидатом лишився тільки лот без фото; після нового CSV core став snapshot, media зберегла старий лот |
 
 ## В роботі
 
@@ -134,4 +141,4 @@
 |---|---|---|
 | 2026-03-10 | Конфігурація тільки через ENV | Спрощує деплой, тестування та перемикання режимів (proxy/direct) |
 | 2026-03-10 | Окремий doc-файл для статусу | Прозоре ведення готовності та тестів |
-| 2026-03-10 | CSV зберігається як `raw_payload JSON` + `row_hash` | Дає повноту даних і швидке визначення змін без втрати полів |
+| 2026-03-10 | CSV зберігається як нормалізовані поля лота + `row_hash` | Дає швидке визначення змін і менший обсяг core-таблиці |

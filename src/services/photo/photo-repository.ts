@@ -15,12 +15,8 @@ interface LotCandidateRow extends RowDataPacket {
   lot_number: number;
   yard_number: number | null;
   image_url: string;
-  photo_status: "unknown" | "ok" | "partial" | "missing";
+  photo_status: "unknown" | "ok" | "missing";
   photo_404_count: number;
-}
-
-interface NumberRow extends RowDataPacket {
-  lot_number: number;
 }
 
 interface CachedImageRow extends RowDataPacket {
@@ -63,13 +59,12 @@ export async function completePhotoRunSuccess(
         lots_scanned = ?,
         lots_processed = ?,
         lots_ok = ?,
-        lots_partial = ?,
         lots_missing = ?,
         images_upserted = ?,
         images_full_size = ?,
         images_bad_quality = ?,
         http_404_count = ?,
-        deleted_lots_count = ?,
+        deleted_lots_count = 0,
         meta_json = JSON_OBJECT(
           'batchSize', ?,
           'fetchConcurrency', ?,
@@ -82,13 +77,11 @@ export async function completePhotoRunSuccess(
       counters.lotsScanned,
       counters.lotsProcessed,
       counters.lotsOk,
-      counters.lotsPartial,
       counters.lotsMissing,
       counters.imagesUpserted,
       counters.imagesFullSize,
       counters.imagesBadQuality,
       counters.http404Count,
-      counters.deletedLotsCount,
       env.photo.batchSize,
       env.photo.fetchConcurrency,
       env.photo.workerTotal,
@@ -113,13 +106,12 @@ export async function completePhotoRunFailure(
         lots_scanned = ?,
         lots_processed = ?,
         lots_ok = ?,
-        lots_partial = ?,
         lots_missing = ?,
         images_upserted = ?,
         images_full_size = ?,
         images_bad_quality = ?,
         http_404_count = ?,
-        deleted_lots_count = ?,
+        deleted_lots_count = 0,
         error_message = ?
       WHERE id = ?
     `,
@@ -127,13 +119,11 @@ export async function completePhotoRunFailure(
       counters.lotsScanned,
       counters.lotsProcessed,
       counters.lotsOk,
-      counters.lotsPartial,
       counters.lotsMissing,
       counters.imagesUpserted,
       counters.imagesFullSize,
       counters.imagesBadQuality,
       counters.http404Count,
-      counters.deletedLotsCount,
       errorMessage.slice(0, 65_000),
       runId,
     ]
@@ -145,36 +135,37 @@ export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandi
   const [rows] = await pool.query<LotCandidateRow[]>(
     `
       SELECT
-        lot_number,
-        yard_number,
-        image_url,
-        photo_status,
-        photo_404_count
-      FROM \`${env.mysql.databaseCore}\`.\`lots\`
+        l.lot_number,
+        l.yard_number,
+        l.image_url,
+        l.photo_status,
+        l.photo_404_count
+      FROM \`${env.mysql.databaseCore}\`.\`lots\` l
       WHERE
-        deleted_at IS NULL
-        AND image_url IS NOT NULL
-        AND MOD(CRC32(CAST(lot_number AS CHAR)), ?) = ?
+        l.image_url IS NOT NULL
+        AND MOD(CRC32(CAST(l.lot_number AS CHAR)), ?) = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+          WHERE li.lot_number = l.lot_number
+            AND li.check_status = 'ok'
+            AND li.is_full_size = 1
+            AND li.variant = 'hd'
+        )
         AND (
-          photo_status = 'unknown'
+          l.photo_status = 'unknown'
           OR (
-            photo_status = 'missing'
-            AND (next_photo_retry_at IS NULL OR next_photo_retry_at <= CURRENT_TIMESTAMP(3))
-          )
-          OR (
-            photo_status = 'partial'
+            l.photo_status = 'missing'
             AND (
-              next_photo_retry_at IS NULL
-              OR next_photo_retry_at <= CURRENT_TIMESTAMP(3)
-              OR last_photo_check_at IS NULL
-              OR last_photo_check_at <= DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? HOUR)
+              l.next_photo_retry_at IS NULL
+              OR l.next_photo_retry_at <= CURRENT_TIMESTAMP(3)
             )
           )
         )
-      ORDER BY COALESCE(next_photo_retry_at, TIMESTAMP '1970-01-01 00:00:00') ASC, last_seen_at DESC
+      ORDER BY COALESCE(l.next_photo_retry_at, TIMESTAMP '1970-01-01 00:00:00') ASC, l.last_seen_at DESC
       LIMIT ?
     `,
-    [env.photo.workerTotal, env.photo.workerIndex, env.photo.recheckPartialAfterHours, limit]
+    [env.photo.workerTotal, env.photo.workerIndex, limit]
   );
 
   return rows.map(row => ({
@@ -264,7 +255,7 @@ export async function fetchCachedGoodImages(
       FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
       WHERE
         lot_number = ?
-        AND variant = 'full'
+        AND variant = 'hd'
         AND check_status = 'ok'
         AND is_full_size = 1
         AND url_hash IN (${placeholders})
@@ -412,21 +403,6 @@ export async function markLotPhotoOk(lotNumber: number): Promise<void> {
   );
 }
 
-export async function markLotPhotoPartial(lotNumber: number): Promise<void> {
-  const pool = getPool();
-  await pool.query(
-    `
-      UPDATE \`${env.mysql.databaseCore}\`.\`lots\`
-      SET
-        photo_status = 'partial',
-        next_photo_retry_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? HOUR),
-        last_photo_check_at = CURRENT_TIMESTAMP(3)
-      WHERE lot_number = ?
-    `,
-    [env.photo.recheckPartialAfterHours, lotNumber]
-  );
-}
-
 export async function markLotPhotoMissingOn404(
   lotNumber: number,
   backoffMinutes: number
@@ -457,51 +433,13 @@ export async function markLotPhotoMissingTemporary(
       UPDATE \`${env.mysql.databaseCore}\`.\`lots\`
       SET
         photo_status = 'missing',
+        photo_404_count = photo_404_count + 1,
         next_photo_retry_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? MINUTE),
         last_photo_check_at = CURRENT_TIMESTAMP(3)
       WHERE lot_number = ?
     `,
     [backoffMinutes, lotNumber]
   );
-}
-
-export async function deleteExpired404Lots(): Promise<number> {
-  const pool = getPool();
-
-  const [rows] = await pool.query<NumberRow[]>(
-    `
-      SELECT lot_number
-      FROM \`${env.mysql.databaseCore}\`.\`lots\`
-      WHERE
-        deleted_at IS NULL
-        AND photo_status = 'missing'
-        AND photo_404_since IS NOT NULL
-        AND photo_404_since <= DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
-    `,
-    [env.photo.deleteAfterDays]
-  );
-
-  if (rows.length === 0) {
-    return 0;
-  }
-
-  const lotNumbers = rows.map(row => Number(row.lot_number));
-  const placeholders = lotNumbers.map(() => "?").join(", ");
-
-  await pool.query(
-    `DELETE FROM \`${env.mysql.databaseMedia}\`.\`lot_images\` WHERE lot_number IN (${placeholders})`,
-    lotNumbers
-  );
-  await pool.query(
-    `DELETE FROM \`${env.mysql.databaseMedia}\`.\`photo_fetch_attempts\` WHERE lot_number IN (${placeholders})`,
-    lotNumbers
-  );
-  await pool.query(
-    `DELETE FROM \`${env.mysql.databaseCore}\`.\`lots\` WHERE lot_number IN (${placeholders})`,
-    lotNumbers
-  );
-
-  return lotNumbers.length;
 }
 
 export function calculateBackoffMinutes(nextAttempt: number): number {
@@ -550,44 +488,6 @@ function variantPriority(variant: ImageVariant): number {
   }
 }
 
-function pickBestImagesPerSequence(images: CheckedLotImage[]): CheckedLotImage[] {
-  const bySequence = new Map<number, CheckedLotImage[]>();
-  for (const image of images) {
-    if (image.variant === "video") {
-      continue;
-    }
-    const current = bySequence.get(image.sequence) ?? [];
-    current.push(image);
-    bySequence.set(image.sequence, current);
-  }
-
-  const best: CheckedLotImage[] = [];
-
-  for (const sequenceImages of bySequence.values()) {
-    const sorted = [...sequenceImages].sort((a, b) => {
-      const aQuality = a.isFullSize ? 1 : 0;
-      const bQuality = b.isFullSize ? 1 : 0;
-      if (aQuality !== bQuality) {
-        return bQuality - aQuality;
-      }
-
-      const aVariant = variantPriority(a.variant);
-      const bVariant = variantPriority(b.variant);
-      if (aVariant !== bVariant) {
-        return bVariant - aVariant;
-      }
-
-      const aPixels = (a.width ?? 0) * (a.height ?? 0);
-      const bPixels = (b.width ?? 0) * (b.height ?? 0);
-      return bPixels - aPixels;
-    });
-
-    best.push(sorted[0]);
-  }
-
-  return best;
-}
-
 export function selectImagesForStorage(images: CheckedLotImage[]): CheckedLotImage[] {
   const map = new Map<string, CheckedLotImage>();
 
@@ -595,7 +495,7 @@ export function selectImagesForStorage(images: CheckedLotImage[]): CheckedLotIma
     const isGood =
       image.checkStatus === "ok" &&
       image.isFullSize &&
-      image.variant === "full";
+      image.variant === "hd";
     if (!isGood) {
       continue;
     }
@@ -633,39 +533,6 @@ export function selectImagesForStorage(images: CheckedLotImage[]): CheckedLotIma
     const bPixels = (b.width ?? 0) * (b.height ?? 0);
     return bPixels - aPixels;
   });
-}
-
-export function evaluateLotStatus(images: CheckedLotImage[]): {
-  status: "ok" | "partial" | "missing";
-  fullCount: number;
-  badCount: number;
-} {
-  if (images.length === 0) {
-    return { status: "missing", fullCount: 0, badCount: 0 };
-  }
-
-  const relevant = pickBestImagesPerSequence(images);
-  if (relevant.length === 0) {
-    return { status: "missing", fullCount: 0, badCount: images.length };
-  }
-
-  let fullCount = 0;
-  let badCount = 0;
-
-  for (const image of relevant) {
-    const isGood = image.checkStatus === "ok" && image.isFullSize && image.variant === "full";
-    if (isGood) {
-      fullCount += 1;
-    } else {
-      badCount += 1;
-    }
-  }
-
-  if (badCount === 0) {
-    return { status: "ok", fullCount, badCount };
-  }
-
-  return { status: "partial", fullCount, badCount };
 }
 
 export function summarizeImageChecks(images: CheckedLotImage[]): {

@@ -6,11 +6,11 @@
 
 - Кожні 5 годин отримувати новий CSV-файл з лотами.
 - Оновлювати або створювати записи в основній БД лотів.
+- Тримати `copart_core.lots` як актуальний snapshot CSV (видаляти лоти, яких більше немає у фіді).
 - Окремо зберігати посилання на фото у другій БД.
 - Підтримувати режими роботи через проксі і без проксі.
 - Коректно обробляти 404 та повторні спроби.
-- Видаляти лоти, якщо 404 триває 30 днів.
-- Відмічати лоти з неякісними/неповними фото для повторної обробки.
+- Відмічати лоти без валідних фото для повторної обробки.
 
 ## Поточний статус
 
@@ -90,7 +90,7 @@ make migrate
 - `npm run photo:sync` — парсинг `lotImages`, перевірка фото, оновлення `copart_media`.
 - `npm run proxy:check` — preflight перевірка проксі, відбір робочих і оцінка місткості.
 - `npm run pipeline:run-once` — повний цикл: ingest + photo sync.
-- `npm run scheduler:start` — планувальник (5 запусків/день + retry cron).
+- `npm run scheduler:start` — планувальник (кожні 5 годин запускає повний pipeline ingest+photo; `PHOTO_RETRY_CRON` опційний).
 - `npm run db:reset` — швидке очищення runtime-таблиць через Docker MySQL.
 - `npm run db:drop` — повний drop/recreate двох БД через Docker MySQL.
 - `./scripts/fresh-test.sh` — один командний сценарій чистого тесту з підсумковими SQL-метриками.
@@ -101,10 +101,20 @@ make migrate
 make fresh-test
 ```
 
+`make fresh-test` тепер за замовчуванням використовує benchmark-профіль:
+
+- `INGEST_MAX_ROWS=1000`
+- `PHOTO_WORKER_TOTAL=12`
+- `PHOTO_FETCH_CONCURRENCY=150`
+- `PROXY_AUTO_SELECT_FOR_PHOTO=true`
+- `PROXY_PREFLIGHT_TOP_N=300`
+- `PROXY_PREFLIGHT_MIN_WORKING=250`
+- `PHOTO_VALIDATE_BY_HEAD_FIRST=false`
+
 Налаштування прогону через ENV (приклад):
 
 ```bash
-INGEST_MAX_ROWS=1000 PHOTO_WORKER_TOTAL=3 PHOTO_FETCH_CONCURRENCY=80 PROXY_PREFLIGHT_TOP_N=40 make fresh-test
+INGEST_MAX_ROWS=1000 PHOTO_WORKER_TOTAL=12 PHOTO_FETCH_CONCURRENCY=150 PROXY_PREFLIGHT_TOP_N=300 PROXY_PREFLIGHT_MIN_WORKING=250 make fresh-test
 ```
 
 Контроль кількості лотів у бойовому ingest (без локальних файлів):
@@ -130,7 +140,7 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - `isHdImage=true` -> `hd`
 - `isThumbNail=false && isHdImage=false` -> `full`
 
-Важливо: статус якості в системі рахується не лише по флагах. Ми робимо фактичну перевірку `width/height` і `content-length` (пороги з ENV), тому рішення про `ok/partial/missing` базується на реальному розмірі фото.
+Важливо: статус якості в системі рахується не лише по флагах. Ми робимо фактичну перевірку `width/height` і `content-length` (пороги з ENV), тому рішення про `ok/missing` базується на реальному розмірі фото.
 
 ## План реалізації (зафіксований)
 
@@ -146,21 +156,20 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - [x] Стрімінгове читання CSV (без завантаження всього файлу в RAM).
 - [x] Батчевий `INSERT ... ON DUPLICATE KEY UPDATE`.
 - [x] Обчислення `row_hash` для виявлення реальних змін.
-- [x] Поля `first_seen_at`, `last_seen_at`, `updated_at_source`.
+- [x] Поля `first_seen_at`, `last_seen_at`, `ingest_run_id` для snapshot-синхронізації.
 
 ### Етап 3. Обробка фото (2M+ URL)
 
 - [x] Витягувати `lotImages` з `imageurl` по кожному лоту.
 - [x] Валідувати фото за типом, роздільною здатністю і розміром.
 - [x] Зберігати у `copart_media.lot_images` всі валідні full-size фото (без `thumb`/`video`), унікально по `sequence+url`.
-- [x] Виставляти статус лота: `ok` / `partial` / `missing`.
+- [x] Виставляти статус лота: `ok` / `missing`.
 
 ### Етап 4. 404 / ретраї / очищення
 
 - [x] Логувати 404/помилки у таблицю спроб.
 - [x] Експоненційний backoff для повторних запитів.
-- [x] Якщо 404 триває 30 днів — видаляти лот з `copart_core`.
-- [x] Повторно перевіряти лоти з частково неякісними фото.
+- [x] Повторно перевіряти лоти без валідних фото.
 
 ### Етап 5. Планувальник і стабільність
 
@@ -184,30 +193,34 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
   - якщо лот новий — створити запис;
   - якщо існує — оновити змінені поля;
   - якщо не змінювався (`row_hash` однаковий) — пропустити важкі операції.
+- Після завершення ingest:
+  - видалити з `copart_core.lots` лоти, яких не було в поточному CSV (`ingest_run_id <> current_run_id`);
+- Для нових лотів ingest може виставити `photo_status=ok`, якщо в `copart_media.lot_images` уже є валідні `hd + full-size` фото.
 
 ### Фото
 
-- Парсити URL з endpoint `lotImages` і перевіряти через HEAD/GET тільки `full` варіанти.
+- Парсити URL з endpoint `lotImages` і перевіряти через HEAD/GET тільки `hd` варіанти.
 - У `copart_media.lot_images` зберігати тільки якісні full-size фото.
-- Поточний performance-профіль: **перевіряються і зберігаються тільки `full` фото** (`thumb`/`video`/`hd` ігноруються).
+- Поточний performance-профіль: **перевіряються і зберігаються тільки `hd` фото** (`thumb`/`video`/не-HD ігноруються).
 - Додано кеш перевірки по `url_hash`: якщо URL уже був `ok + full_size`, повторний `GET` пропускається.
 - У `photo_fetch_attempts` логуються тільки `404` і помилки (`error`/non-2xx), успішні `2xx/206` більше не засмічують таблицю.
 - `check_status = ok`,
 - `is_full_size = 1`,
 - без `thumb`/`video`,
 - всі унікальні good URL (накопичення між прогонами).
-- Для `partial` лотів запис фото працює в merge-режимі: вже знайдені good фото не видаляються при тимчасових збоях джерела.
+- Запис фото працює в merge-режимі: вже знайдені good фото не видаляються при повторних прогонах.
 - Всі спроби запитів і помилки зберігати в `copart_media.photo_fetch_attempts`.
+- Кандидати на `photo:sync` визначаються так: лот є в актуальному `copart_core.lots`, але для нього ще немає жодного валідного `hd + full-size` фото в `copart_media.lot_images`.
 
 ### Правило "повні фото"
 
 Лот вважається `photo_ok`, якщо:
 
-- для кожного `sequence` є хоча б одне справді велике фото (`is_full_size = 1`);
-- для статусу не враховуються `thumb`/`video`;
-- фото пройшли пороги якості (мін. ширина/висота і/або розмір).
+- у `copart_media.lot_images` є хоча б одне фото з `check_status = ok`;
+- це фото має `variant = hd` і `is_full_size = 1`;
+- фото пройшло пороги якості (мін. ширина/висота і/або розмір).
 
-Якщо хоча б одне фото неякісне або недоступне — лот позначається на повторну перевірку.
+Якщо валідних `hd + full-size` фото ще немає, лот залишається кандидатом на повторну перевірку.
 
 ## Конфігурація (тільки через ENV)
 
@@ -255,6 +268,7 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - `PROXY_AUTO_SELECT_FOR_PHOTO=true` — у `photo:cluster` перед стартом воркерів береться 1 реальний URL фото з БД і preflight виконується саме по ньому.
 - `PROXY_AUTO_SELECT_PROBE_LOTS=20` — скільки останніх лотів перевіряти, щоб знайти валідний URL фото для benchmark.
 - Рекомендований розмір робочого пулу: `PROXY_PREFLIGHT_TOP_N=250..350` (зазвичай найкращий баланс швидкості/стабільності).
+- Для server benchmark-профілю в `fresh-test.sh` зафіксовано дефолт: `PROXY_PREFLIGHT_TOP_N=300`, `PROXY_PREFLIGHT_MIN_WORKING=250`.
 - Після автовідбору воркери отримують тільки selected pool і працюють без повторного preflight.
 
 Ручна перевірка пулу:
@@ -326,15 +340,18 @@ wait
 
 ```bash
 docker compose run --rm \
-  -e PHOTO_WORKER_TOTAL=4 \
+  -e PHOTO_WORKER_TOTAL=12 \
   -e PHOTO_FETCH_CONCURRENCY=150 \
+  -e PROXY_AUTO_SELECT_FOR_PHOTO=true \
+  -e PROXY_PREFLIGHT_TOP_N=300 \
+  -e PROXY_PREFLIGHT_MIN_WORKING=250 \
   app node dist/index.js photo:cluster
 ```
 
 Альтернатива через `make`:
 
 ```bash
-PHOTO_WORKER_TOTAL=4 PHOTO_FETCH_CONCURRENCY=150 make photo-cluster
+PHOTO_WORKER_TOTAL=12 PHOTO_FETCH_CONCURRENCY=150 PROXY_AUTO_SELECT_FOR_PHOTO=true PROXY_PREFLIGHT_TOP_N=300 PROXY_PREFLIGHT_MIN_WORKING=250 make photo-cluster
 ```
 
 Гарантія без дублювання лотів між воркерами:

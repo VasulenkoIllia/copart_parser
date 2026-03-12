@@ -4,6 +4,8 @@ import {
   completeIngestRunFailure,
   completeIngestRunSuccess,
   createIngestRun,
+  hydrateInsertedLotsPhotoStatusFromMedia,
+  pruneMissingLots,
   upsertLotsBatch,
 } from "./lot-repository";
 import { mapCsvRow } from "./row-mapper";
@@ -46,7 +48,11 @@ function chunk<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
-async function flushBatch(batch: IngestCandidate[], counters: IngestCounters): Promise<void> {
+async function flushBatch(
+  batch: IngestCandidate[],
+  runId: number,
+  counters: IngestCounters
+): Promise<void> {
   if (batch.length === 0) {
     return;
   }
@@ -54,7 +60,7 @@ async function flushBatch(batch: IngestCandidate[], counters: IngestCounters): P
   const seenAt = new Date();
   const chunks = chunk(batch, env.ingest.upsertChunk);
   for (const currentChunk of chunks) {
-    const result = await upsertLotsBatch(currentChunk, seenAt);
+    const result = await upsertLotsBatch(currentChunk, runId, seenAt);
     counters.rowsInserted += result.inserted;
     counters.rowsUpdated += result.updated;
     counters.rowsUnchanged += result.unchanged;
@@ -68,6 +74,8 @@ async function executeCsvIngest(): Promise<void> {
   const batch: IngestCandidate[] = [];
   const maxRows = env.ingest.maxRows;
   let maxRowsReached = false;
+  let prunedLots = 0;
+  let hydratedLots = 0;
 
   logger.info("CSV ingest started", {
     sourceUrl: toLoggableSource(sourceUrl),
@@ -102,7 +110,7 @@ async function executeCsvIngest(): Promise<void> {
       batch.push(mapped);
 
       if (batch.length >= env.ingest.batchSize) {
-        await flushBatch(batch, counters);
+        await flushBatch(batch, runId, counters);
         batch.length = 0;
       }
 
@@ -131,7 +139,19 @@ async function executeCsvIngest(): Promise<void> {
       });
     }
 
-    await flushBatch(batch, counters);
+    await flushBatch(batch, runId, counters);
+
+    hydratedLots = await hydrateInsertedLotsPhotoStatusFromMedia(runId);
+
+    const skipPruneForLimitedRun = maxRows > 0 && maxRowsReached;
+    if (env.ingest.pruneMissingLots && !skipPruneForLimitedRun) {
+      prunedLots = await pruneMissingLots(runId);
+    } else if (env.ingest.pruneMissingLots && skipPruneForLimitedRun) {
+      logger.warn("CSV ingest prune skipped because run used INGEST_MAX_ROWS limit", {
+        maxRows,
+      });
+    }
+
     await completeIngestRunSuccess(runId, counters, sourceUrl);
 
     const durationMs = Date.now() - startedAt;
@@ -143,6 +163,8 @@ async function executeCsvIngest(): Promise<void> {
       rowsInserted: counters.rowsInserted,
       rowsUpdated: counters.rowsUpdated,
       rowsUnchanged: counters.rowsUnchanged,
+      hydratedLotsFromMedia: hydratedLots,
+      prunedLots,
       durationMs,
       rowsPerSec,
       maxRows: maxRows > 0 ? maxRows : null,
@@ -159,6 +181,8 @@ async function executeCsvIngest(): Promise<void> {
           `rows_inserted=${counters.rowsInserted}`,
           `rows_updated=${counters.rowsUpdated}`,
           `rows_unchanged=${counters.rowsUnchanged}`,
+          `hydrated_lots_from_media=${hydratedLots}`,
+          `pruned_lots=${prunedLots}`,
         ].join("\n")
       );
     }
@@ -176,9 +200,11 @@ async function executeCsvIngest(): Promise<void> {
   }
 }
 
-export async function runCsvIngest(): Promise<void> {
+export async function runCsvIngest(): Promise<boolean> {
   const locked = await withAppLock("csv_ingest", executeCsvIngest);
   if (locked === null) {
     logger.warn("CSV ingest skipped because another run owns the lock");
+    return false;
   }
+  return true;
 }

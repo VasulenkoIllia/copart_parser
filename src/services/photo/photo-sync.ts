@@ -10,9 +10,7 @@ import {
   completePhotoRunFailure,
   completePhotoRunSuccess,
   createPhotoRun,
-  deleteExpired404Lots,
   deriveVariant,
-  evaluateLotStatus,
   fetchCachedGoodImages,
   fetchPhotoCandidates,
   hashUrl,
@@ -20,7 +18,6 @@ import {
   markLotPhotoMissingOn404,
   markLotPhotoMissingTemporary,
   markLotPhotoOk,
-  markLotPhotoPartial,
   replaceLotImages,
   selectImagesForStorage,
   summarizeImageChecks,
@@ -45,13 +42,11 @@ function createCounters(): PhotoRunCounters {
     lotsScanned: 0,
     lotsProcessed: 0,
     lotsOk: 0,
-    lotsPartial: 0,
     lotsMissing: 0,
     imagesUpserted: 0,
     imagesFullSize: 0,
     imagesBadQuality: 0,
     http404Count: 0,
-    deletedLotsCount: 0,
   };
 }
 
@@ -97,8 +92,8 @@ function parseEndpointPayload(
         Boolean(link.isEngineSound)
       );
 
-      // Performance mode: process only FULL photos.
-      if (variant !== "full") {
+      // Performance mode: process only HD photos.
+      if (variant !== "hd") {
         continue;
       }
 
@@ -265,7 +260,6 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
     const storageImages = selectImagesForStorage(checkedLinks);
     await replaceLotImages(candidate.lotNumber, storageImages, "merge");
 
-    const lotStatus = evaluateLotStatus(checkedLinks);
     const imageStats = summarizeImageChecks(checkedLinks);
 
     counters.imagesUpserted += storageImages.length;
@@ -273,46 +267,30 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
     counters.imagesBadQuality += imageStats.badQuality;
     counters.http404Count += imageStats.notFound;
 
-    if (lotStatus.status === "ok") {
+    if (storageImages.length > 0) {
       await markLotPhotoOk(candidate.lotNumber);
       logResult({
         lotNumber: candidate.lotNumber,
         status: "ok",
         endpointStatus,
         parsedLinks: parsed.links.length,
-        fullBySequence: lotStatus.fullCount,
-        badBySequence: lotStatus.badCount,
         storedGoodImages: storageImages.length,
         badQuality: imageStats.badQuality,
         notFound: imageStats.notFound,
       });
       counters.lotsOk += 1;
-    } else if (lotStatus.status === "partial") {
-      await markLotPhotoPartial(candidate.lotNumber);
-      logResult({
-        lotNumber: candidate.lotNumber,
-        status: "partial",
-        endpointStatus,
-        parsedLinks: parsed.links.length,
-        fullBySequence: lotStatus.fullCount,
-        badBySequence: lotStatus.badCount,
-        storedGoodImages: storageImages.length,
-        badQuality: imageStats.badQuality,
-        notFound: imageStats.notFound,
-      });
-      counters.lotsPartial += 1;
     } else {
       const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
       await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
       logResult({
         lotNumber: candidate.lotNumber,
         status: "missing",
-        reason: "no_good_sequences",
+        reason: "no_valid_hd_images",
         endpointStatus,
         parsedLinks: parsed.links.length,
-        fullBySequence: lotStatus.fullCount,
-        badBySequence: lotStatus.badCount,
         storedGoodImages: storageImages.length,
+        badQuality: imageStats.badQuality,
+        notFound: imageStats.notFound,
         backoffMinutes: backoff,
       });
       counters.lotsMissing += 1;
@@ -377,7 +355,6 @@ async function executePhotoSync(): Promise<void> {
           lotsProcessed: counters.lotsProcessed,
           lotsRemaining: Math.max(0, counters.lotsScanned - counters.lotsProcessed),
           lotsOk: counters.lotsOk,
-          lotsPartial: counters.lotsPartial,
           lotsMissing: counters.lotsMissing,
           imagesUpserted: counters.imagesUpserted,
           http404Count: counters.http404Count,
@@ -387,9 +364,6 @@ async function executePhotoSync(): Promise<void> {
       }
     });
 
-    const deleted = await deleteExpired404Lots();
-    counters.deletedLotsCount += deleted;
-
     await completePhotoRunSuccess(runId, counters);
 
     const durationMs = Date.now() - startedAt;
@@ -397,13 +371,11 @@ async function executePhotoSync(): Promise<void> {
       lotsScanned: counters.lotsScanned,
       lotsProcessed: counters.lotsProcessed,
       lotsOk: counters.lotsOk,
-      lotsPartial: counters.lotsPartial,
       lotsMissing: counters.lotsMissing,
       imagesUpserted: counters.imagesUpserted,
       imagesFullSize: counters.imagesFullSize,
       imagesBadQuality: counters.imagesBadQuality,
       http404Count: counters.http404Count,
-      deletedLotsCount: counters.deletedLotsCount,
       durationMs,
       lotsPerMin:
         durationMs > 0 ? Number(((counters.lotsProcessed / durationMs) * 60_000).toFixed(2)) : 0,
@@ -418,13 +390,11 @@ async function executePhotoSync(): Promise<void> {
           `lots_scanned=${counters.lotsScanned}`,
           `lots_processed=${counters.lotsProcessed}`,
           `lots_ok=${counters.lotsOk}`,
-          `lots_partial=${counters.lotsPartial}`,
           `lots_missing=${counters.lotsMissing}`,
           `images_upserted=${counters.imagesUpserted}`,
           `images_full_size=${counters.imagesFullSize}`,
           `images_bad_quality=${counters.imagesBadQuality}`,
           `http_404_count=${counters.http404Count}`,
-          `deleted_lots_count=${counters.deletedLotsCount}`,
         ].join("\n")
       );
     }
@@ -442,25 +412,29 @@ async function executePhotoSync(): Promise<void> {
   }
 }
 
-export async function runPhotoSync(): Promise<void> {
-  await prepareProxyPool("photo_sync_start", true);
-  const proxySnapshot = getProxyPoolSnapshot();
-  logger.info("Photo sync proxy pool ready", {
-    mode: proxySnapshot.mode,
-    configured: proxySnapshot.configured,
-    selected: proxySnapshot.selected,
-    preflightEnabled: proxySnapshot.preflightEnabled,
-    preflightCompleted: proxySnapshot.preflightCompleted,
-  });
-
+export async function runPhotoSync(): Promise<boolean> {
   const lockName =
     env.photo.workerTotal > 1 ? `photo_sync_worker_${env.photo.workerIndex}` : "photo_sync";
-  const locked = await withAppLock(lockName, executePhotoSync);
+  const locked = await withAppLock(lockName, async () => {
+    await prepareProxyPool("photo_sync_start", true);
+    const proxySnapshot = getProxyPoolSnapshot();
+    logger.info("Photo sync proxy pool ready", {
+      mode: proxySnapshot.mode,
+      configured: proxySnapshot.configured,
+      selected: proxySnapshot.selected,
+      preflightEnabled: proxySnapshot.preflightEnabled,
+      preflightCompleted: proxySnapshot.preflightCompleted,
+    });
+
+    await executePhotoSync();
+  });
   if (locked === null) {
     logger.warn("Photo sync skipped because another run owns the lock", {
       lockName,
       workerTotal: env.photo.workerTotal,
       workerIndex: env.photo.workerIndex,
     });
+    return false;
   }
+  return true;
 }

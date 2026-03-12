@@ -110,6 +110,7 @@ function sanitizeSource(source: string): string {
 
 export async function upsertLotsBatch(
   batch: IngestCandidate[],
+  runId: number,
   seenAt: Date
 ): Promise<UpsertBatchResult> {
   if (batch.length === 0) {
@@ -159,15 +160,13 @@ export async function upsertLotsBatch(
   const params: Array<number | string | Date | null> = [];
 
   for (const item of normalizedBatch) {
-    valuePlaceholders.push("(?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    valuePlaceholders.push("(?, ?, ?, ?, ?, ?, ?)");
     params.push(
       item.lotNumber,
       item.yardNumber,
       item.imageUrl,
-      JSON.stringify(item.rawPayload),
       item.rowHash,
-      item.sourceLastUpdatedAt,
-      item.sourceCreatedAt,
+      runId,
       seenAt,
       seenAt
     );
@@ -179,26 +178,89 @@ export async function upsertLotsBatch(
         lot_number,
         yard_number,
         image_url,
-        raw_payload,
         row_hash,
-        source_last_updated_at,
-        source_created_at,
+        ingest_run_id,
         first_seen_at,
         last_seen_at
       )
       VALUES ${valuePlaceholders.join(", ")}
       ON DUPLICATE KEY UPDATE
         yard_number = VALUES(yard_number),
+        photo_status = IF(
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          'unknown',
+          photo_status
+        ),
+        photo_404_count = IF(
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          0,
+          photo_404_count
+        ),
+        photo_404_since = IF(
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          NULL,
+          photo_404_since
+        ),
+        next_photo_retry_at = IF(
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          NULL,
+          next_photo_retry_at
+        ),
+        last_photo_check_at = IF(
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          NULL,
+          last_photo_check_at
+        ),
         image_url = VALUES(image_url),
-        raw_payload = VALUES(raw_payload),
         row_hash = VALUES(row_hash),
-        source_last_updated_at = VALUES(source_last_updated_at),
-        source_created_at = VALUES(source_created_at),
-        last_seen_at = VALUES(last_seen_at),
-        deleted_at = NULL
+        ingest_run_id = VALUES(ingest_run_id),
+        last_seen_at = VALUES(last_seen_at)
     `,
     params
   );
 
   return { inserted, updated, unchanged };
+}
+
+export async function pruneMissingLots(runId: number): Promise<number> {
+  const pool = getPool();
+  const [result] = await pool.query<ResultSetHeader>(
+    `
+      DELETE FROM \`${env.mysql.databaseCore}\`.\`lots\`
+      WHERE ingest_run_id <> ?
+    `,
+    [runId]
+  );
+  return result.affectedRows;
+}
+
+export async function hydrateInsertedLotsPhotoStatusFromMedia(runId: number): Promise<number> {
+  const pool = getPool();
+
+  const [result] = await pool.query<ResultSetHeader>(
+    `
+      UPDATE \`${env.mysql.databaseCore}\`.\`lots\` l
+      JOIN (
+        SELECT lot_number, MAX(last_checked_at) AS max_checked_at
+        FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
+        WHERE check_status = 'ok'
+          AND is_full_size = 1
+          AND variant = 'hd'
+        GROUP BY lot_number
+      ) m
+        ON m.lot_number = l.lot_number
+      SET
+        l.photo_status = 'ok',
+        l.photo_404_count = 0,
+        l.photo_404_since = NULL,
+        l.next_photo_retry_at = NULL,
+        l.last_photo_check_at = COALESCE(m.max_checked_at, CURRENT_TIMESTAMP(3))
+      WHERE
+        l.ingest_run_id = ?
+        AND l.photo_status <> 'ok'
+    `,
+    [runId]
+  );
+
+  return result.affectedRows;
 }

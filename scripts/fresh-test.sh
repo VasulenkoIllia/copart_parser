@@ -5,9 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 INGEST_MAX_ROWS="${INGEST_MAX_ROWS:-1000}"
-PHOTO_WORKER_TOTAL="${PHOTO_WORKER_TOTAL:-3}"
+PHOTO_WORKER_TOTAL="${PHOTO_WORKER_TOTAL:-12}"
 PHOTO_BATCH_SIZE="${PHOTO_BATCH_SIZE:-1000}"
-PHOTO_FETCH_CONCURRENCY="${PHOTO_FETCH_CONCURRENCY:-80}"
+PHOTO_FETCH_CONCURRENCY="${PHOTO_FETCH_CONCURRENCY:-150}"
 PHOTO_HTTP_MODE="${PHOTO_HTTP_MODE:-proxy}"
 PROXY_LIST_FILE="${PROXY_LIST_FILE:-./proxies.txt}"
 PROXY_AUTO_SELECT_FOR_PHOTO="${PROXY_AUTO_SELECT_FOR_PHOTO:-true}"
@@ -15,7 +15,7 @@ PROXY_AUTO_SELECT_PROBE_LOTS="${PROXY_AUTO_SELECT_PROBE_LOTS:-20}"
 PROXY_PREFLIGHT_TOP_N="${PROXY_PREFLIGHT_TOP_N:-300}"
 PROXY_PREFLIGHT_CONCURRENCY="${PROXY_PREFLIGHT_CONCURRENCY:-300}"
 PROXY_PREFLIGHT_TIMEOUT_MS="${PROXY_PREFLIGHT_TIMEOUT_MS:-12000}"
-PROXY_PREFLIGHT_MIN_WORKING="${PROXY_PREFLIGHT_MIN_WORKING:-200}"
+PROXY_PREFLIGHT_MIN_WORKING="${PROXY_PREFLIGHT_MIN_WORKING:-250}"
 PHOTO_HTTP_TIMEOUT_MS="${PHOTO_HTTP_TIMEOUT_MS:-12000}"
 MYSQL_POOL_MIN="${MYSQL_POOL_MIN:-2}"
 MYSQL_POOL_MAX="${MYSQL_POOL_MAX:-20}"
@@ -26,7 +26,7 @@ PHOTO_VALIDATE_BY_HEAD_FIRST="${PHOTO_VALIDATE_BY_HEAD_FIRST:-false}"
 started_epoch="$(date +%s)"
 
 echo "== START $(date -Is) =="
-echo "config: INGEST_MAX_ROWS=${INGEST_MAX_ROWS}, PHOTO_WORKER_TOTAL=${PHOTO_WORKER_TOTAL}, PHOTO_FETCH_CONCURRENCY=${PHOTO_FETCH_CONCURRENCY}, PHOTO_HTTP_MODE=${PHOTO_HTTP_MODE}"
+echo "config: INGEST_MAX_ROWS=${INGEST_MAX_ROWS}, PHOTO_WORKER_TOTAL=${PHOTO_WORKER_TOTAL}, PHOTO_FETCH_CONCURRENCY=${PHOTO_FETCH_CONCURRENCY}, PHOTO_HTTP_MODE=${PHOTO_HTTP_MODE}, PROXY_PREFLIGHT_TOP_N=${PROXY_PREFLIGHT_TOP_N}, PROXY_PREFLIGHT_MIN_WORKING=${PROXY_PREFLIGHT_MIN_WORKING}"
 
 echo "== STEP 1/6: Ensure MySQL is up =="
 docker compose up -d mysql
@@ -49,18 +49,34 @@ mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -e \"
 SELECT COUNT(*) AS lots_total FROM copart_core.lots;
 SELECT COUNT(*) AS due_total
 FROM copart_core.lots
-WHERE deleted_at IS NULL
-  AND image_url IS NOT NULL
+WHERE image_url IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM copart_media.lot_images li
+    WHERE li.lot_number = lots.lot_number
+      AND li.check_status = 'ok'
+      AND li.is_full_size = 1
+      AND li.variant = 'hd'
+  )
   AND (
     photo_status = 'unknown'
     OR (photo_status = 'missing' AND (next_photo_retry_at IS NULL OR next_photo_retry_at <= CURRENT_TIMESTAMP(3)))
-    OR (photo_status = 'partial' AND (next_photo_retry_at IS NULL OR next_photo_retry_at <= CURRENT_TIMESTAMP(3)))
   );
 SELECT MOD(CRC32(CAST(lot_number AS CHAR)), ${PHOTO_WORKER_TOTAL}) AS worker_shard, COUNT(*) AS due_lots
 FROM copart_core.lots
-WHERE deleted_at IS NULL
-  AND image_url IS NOT NULL
-  AND photo_status = 'unknown'
+WHERE image_url IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM copart_media.lot_images li
+    WHERE li.lot_number = lots.lot_number
+      AND li.check_status = 'ok'
+      AND li.is_full_size = 1
+      AND li.variant = 'hd'
+  )
+  AND (
+    photo_status = 'unknown'
+    OR (photo_status = 'missing' AND (next_photo_retry_at IS NULL OR next_photo_retry_at <= CURRENT_TIMESTAMP(3)))
+  )
 GROUP BY worker_shard
 ORDER BY worker_shard;
 \"
@@ -91,7 +107,7 @@ docker compose run --rm \
 echo "== RESULT SUMMARY =="
 docker compose exec -T mysql sh -lc "
 mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -e \"
-SELECT id,status,lots_scanned,lots_processed,lots_ok,lots_partial,lots_missing,images_upserted,
+SELECT id,status,lots_scanned,lots_processed,lots_ok,lots_missing,images_upserted,
        ROUND(TIMESTAMPDIFF(MICROSECOND,started_at,finished_at)/1000000,2) AS duration_sec,error_message
 FROM copart_core.photo_runs
 ORDER BY id DESC

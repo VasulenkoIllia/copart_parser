@@ -1,4 +1,4 @@
-export type LotPhotoStatus = "unknown" | "ok" | "partial" | "missing";
+export type LotPhotoStatus = "unknown" | "ok" | "missing";
 
 export interface PhotoLotCandidate {
   lotNumber: number;
@@ -34,13 +34,11 @@ export interface PhotoRunCounters {
   lotsScanned: number;
   lotsProcessed: number;
   lotsOk: number;
-  lotsPartial: number;
   lotsMissing: number;
   imagesUpserted: number;
   imagesFullSize: number;
   imagesBadQuality: number;
   http404Count: number;
-  deletedLotsCount: number;
 }
 
 export interface LotImagesEndpointPayload {

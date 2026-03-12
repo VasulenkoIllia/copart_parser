@@ -48,6 +48,7 @@ interface AppEnv {
     concurrency: number;
     progressEveryRows: number;
     maxRows: number;
+    pruneMissingLots: boolean;
     rowHashAlgo: string;
   };
   photo: {
@@ -67,9 +68,6 @@ interface AppEnv {
     acceptedExtensions: string[];
     retryBaseDelayMinutes: number;
     retryMaxDelayMinutes: number;
-    retryMaxAttempts: number;
-    recheckPartialAfterHours: number;
-    deleteAfterDays: number;
   };
   proxy: {
     mode: HttpMode;
@@ -221,7 +219,7 @@ const env: AppEnv = {
   },
   schedule: {
     ingestCron: optional("INGEST_CRON", "0 0,5,10,15,20 * * *"),
-    photoRetryCron: optional("PHOTO_RETRY_CRON", "*/30 * * * *"),
+    photoRetryCron: optional("PHOTO_RETRY_CRON", ""),
     runLockTtlSec: toInt("RUN_LOCK_TTL_SEC", 16200),
     runOnStart: toBoolean("SCHEDULER_RUN_ON_START", false),
   },
@@ -254,6 +252,7 @@ const env: AppEnv = {
     concurrency: toInt("INGEST_CONCURRENCY", 4),
     progressEveryRows: toInt("INGEST_PROGRESS_EVERY_ROWS", 5_000),
     maxRows: toInt("INGEST_MAX_ROWS", 0),
+    pruneMissingLots: toBoolean("INGEST_PRUNE_MISSING_LOTS", true),
     rowHashAlgo: optional("INGEST_ROW_HASH_ALGO", "sha256"),
   },
   photo: {
@@ -273,9 +272,6 @@ const env: AppEnv = {
     acceptedExtensions: parseList("PHOTO_ACCEPTED_EXTENSIONS"),
     retryBaseDelayMinutes: toInt("PHOTO_RETRY_BASE_DELAY_MINUTES", 30),
     retryMaxDelayMinutes: toInt("PHOTO_RETRY_MAX_DELAY_MINUTES", 1440),
-    retryMaxAttempts: toInt("PHOTO_RETRY_MAX_ATTEMPTS", 60),
-    recheckPartialAfterHours: toInt("PHOTO_RECHECK_PARTIAL_AFTER_HOURS", 24),
-    deleteAfterDays: toInt("PHOTO_404_DELETE_AFTER_DAYS", 30),
   },
   proxy: {
     mode: parseHttpMode("HTTP_MODE", "direct"),

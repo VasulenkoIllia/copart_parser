@@ -85,8 +85,7 @@ async function resolvePhotoHealthcheckUrlFromLots(): Promise<string | null> {
     `
       SELECT lot_number, yard_number, image_url
       FROM \`${env.mysql.databaseCore}\`.\`lots\`
-      WHERE deleted_at IS NULL
-        AND image_url IS NOT NULL
+      WHERE image_url IS NOT NULL
       ORDER BY last_seen_at DESC
       LIMIT ?
     `,

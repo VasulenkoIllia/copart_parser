@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { RowDataPacket } from "mysql2";
 import env from "../../config/env";
 import { getPool } from "../../db/mysql";
+import { logger } from "../../lib/logger";
 
 export interface AppLockHandle {
   lockName: string;
@@ -60,6 +61,18 @@ export async function releaseAppLock(handle: AppLockHandle): Promise<void> {
   );
 }
 
+export async function renewAppLock(handle: AppLockHandle): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `
+      UPDATE \`${env.mysql.databaseCore}\`.\`app_locks\`
+      SET locked_until = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND)
+      WHERE lock_name = ? AND owner_id = ?
+    `,
+    [env.schedule.runLockTtlSec, handle.lockName, handle.ownerId]
+  );
+}
+
 export async function withAppLock<T>(
   lockName: string,
   callback: () => Promise<T>
@@ -69,9 +82,33 @@ export async function withAppLock<T>(
     return null;
   }
 
+  const renewEveryMs = Math.max(1_000, Math.floor((env.schedule.runLockTtlSec * 1_000) / 3));
+  let renewInFlight = false;
+  const timer = setInterval(() => {
+    if (renewInFlight) {
+      return;
+    }
+
+    renewInFlight = true;
+    void renewAppLock(handle)
+      .catch(error => {
+        logger.warn("App lock renewal failed", {
+          lockName: handle.lockName,
+          ownerId: handle.ownerId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        renewInFlight = false;
+      });
+  }, renewEveryMs);
+
+  timer.unref?.();
+
   try {
     return await callback();
   } finally {
+    clearInterval(timer);
     await releaseAppLock(handle);
   }
 }
