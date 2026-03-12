@@ -183,7 +183,9 @@ function proxyLabel(proxy: ProxyConfig): string {
 }
 
 function isHealthyProxyStatus(status: number): boolean {
-  return status >= 200 && status < 400;
+  // Preflight checks route reachability, not business-level API success.
+  // Accept most non-5xx responses and reject explicit proxy-auth responses.
+  return status >= 200 && status < 500 && status !== 407;
 }
 
 function sanitizeError(error: unknown): string {
@@ -229,7 +231,7 @@ async function probeProxyWithGet(proxy: ProxyConfig, url: string): Promise<numbe
     method: "GET",
     url,
     timeout: env.proxy.preflightTimeoutMs,
-    maxRedirects: 3,
+    maxRedirects: 0,
     responseType: "stream",
     proxy,
     validateStatus: () => true,
@@ -259,7 +261,7 @@ async function probeProxyUrl(proxy: ProxyConfig, url: string): Promise<{
       method: "HEAD",
       url,
       timeout: env.proxy.preflightTimeoutMs,
-      maxRedirects: 3,
+      maxRedirects: 0,
       proxy,
       validateStatus: () => true,
       headers: {
@@ -300,7 +302,9 @@ async function sendRouteRequest<T>(
   while (true) {
     const response = await axios.request<T>({
       ...currentConfig,
-      maxRedirects: remainingManualRedirects,
+      // Handle redirects manually so route errors on HTTPS CONNECT do not get swallowed
+      // by axios internal redirect flow.
+      maxRedirects: 0,
       proxy: route ? route : false,
       validateStatus: () => true,
     });
