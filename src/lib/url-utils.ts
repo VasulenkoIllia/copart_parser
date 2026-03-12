@@ -1,4 +1,11 @@
-export function normalizeCopartLotImagesUrl(value: string | null | undefined): string | null {
+interface NormalizeCopartUrlOptions {
+  protocol?: "http" | "https";
+}
+
+export function normalizeCopartLotImagesUrl(
+  value: string | null | undefined,
+  options: NormalizeCopartUrlOptions = {}
+): string | null {
   if (!value) {
     return null;
   }
@@ -10,8 +17,8 @@ export function normalizeCopartLotImagesUrl(value: string | null | undefined): s
 
   try {
     const url = new URL(trimmed);
-    if (url.hostname.toLowerCase() === "inventoryv2.copart.io" && url.protocol === "http:") {
-      url.protocol = "https:";
+    if (url.hostname.toLowerCase() === "inventoryv2.copart.io" && options.protocol) {
+      url.protocol = `${options.protocol}:`;
     }
     return url.toString();
   } catch {

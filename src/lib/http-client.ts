@@ -83,6 +83,19 @@ function resolveRedirectUrl(
   }
 }
 
+function buildInventoryProtocolVariant(urlRaw: string, protocol: "http" | "https"): string | null {
+  try {
+    const url = new URL(urlRaw);
+    if (url.hostname.toLowerCase() !== "inventoryv2.copart.io") {
+      return null;
+    }
+    url.protocol = `${protocol}:`;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function parseProxyUrl(value: string): ProxyConfig {
   const raw = value.trim();
   if (!raw) {
@@ -211,10 +224,10 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function probeProxyWithGet(proxy: ProxyConfig): Promise<number> {
+async function probeProxyWithGet(proxy: ProxyConfig, url: string): Promise<number> {
   const getResponse = await axios.request({
     method: "GET",
-    url: env.proxy.healthcheckUrl,
+    url,
     timeout: env.proxy.preflightTimeoutMs,
     maxRedirects: 3,
     responseType: "stream",
@@ -235,6 +248,41 @@ async function probeProxyWithGet(proxy: ProxyConfig): Promise<number> {
   }
 
   return getResponse.status;
+}
+
+async function probeProxyUrl(proxy: ProxyConfig, url: string): Promise<{
+  status: number | null;
+  error: string | null;
+}> {
+  try {
+    const headResponse = await axios.request({
+      method: "HEAD",
+      url,
+      timeout: env.proxy.preflightTimeoutMs,
+      maxRedirects: 3,
+      proxy,
+      validateStatus: () => true,
+      headers: {
+        "User-Agent": DEFAULT_USER_AGENT,
+      },
+    });
+
+    const status = headResponse.status;
+    if (status === 405) {
+      return { status: await probeProxyWithGet(proxy, url), error: null };
+    }
+    return { status, error: null };
+  } catch (headError) {
+    const headMessage = sanitizeError(headError);
+    try {
+      return { status: await probeProxyWithGet(proxy, url), error: null };
+    } catch (getError) {
+      return {
+        status: null,
+        error: `HEAD: ${headMessage}; GET: ${sanitizeError(getError)}`,
+      };
+    }
+  }
 }
 
 async function sendRouteRequest<T>(
@@ -296,32 +344,20 @@ async function sendRouteRequest<T>(
 
 async function probeProxy(proxy: ProxyConfig): Promise<ProxyProbeResult> {
   const startedAt = Date.now();
-  let status: number | null = null;
-  let error: string | null = null;
+  let { status, error } = await probeProxyUrl(proxy, env.proxy.healthcheckUrl);
 
-  try {
-    const headResponse = await axios.request({
-      method: "HEAD",
-      url: env.proxy.healthcheckUrl,
-      timeout: env.proxy.preflightTimeoutMs,
-      maxRedirects: 3,
-      proxy,
-      validateStatus: () => true,
-      headers: {
-        "User-Agent": DEFAULT_USER_AGENT,
-      },
-    });
-
-    status = headResponse.status;
-    if (status === 405) {
-      status = await probeProxyWithGet(proxy);
-    }
-  } catch (headError) {
-    const headMessage = sanitizeError(headError);
-    try {
-      status = await probeProxyWithGet(proxy);
-    } catch (getError) {
-      error = `HEAD: ${headMessage}; GET: ${sanitizeError(getError)}`;
+  const fallbackHttpUrl = buildInventoryProtocolVariant(env.proxy.healthcheckUrl, "http");
+  const shouldTryHttpFallback =
+    fallbackHttpUrl &&
+    fallbackHttpUrl !== env.proxy.healthcheckUrl &&
+    (status === null || !isHealthyProxyStatus(status));
+  if (shouldTryHttpFallback) {
+    const fallback = await probeProxyUrl(proxy, fallbackHttpUrl);
+    if (fallback.status !== null && isHealthyProxyStatus(fallback.status)) {
+      status = fallback.status;
+      error = null;
+    } else if (status === null && fallback.error) {
+      error = fallback.error;
     }
   }
 

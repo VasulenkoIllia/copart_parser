@@ -151,7 +151,10 @@ async function inspectParsedLinks(links: ParsedLotImageLink[]): Promise<CheckedL
 
 async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounters): Promise<void> {
   const lotStartedAt = Date.now();
-  const endpointUrl = normalizeCopartLotImagesUrl(candidate.imageUrl) ?? candidate.imageUrl;
+  const endpointProtocol = env.proxy.mode === "direct" ? "https" : "http";
+  const endpointUrl =
+    normalizeCopartLotImagesUrl(candidate.imageUrl, { protocol: endpointProtocol }) ??
+    candidate.imageUrl;
   const logResult = (meta: Record<string, unknown>): void => {
     logLotResult({
       ...meta,
