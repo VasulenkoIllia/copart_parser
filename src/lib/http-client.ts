@@ -48,7 +48,28 @@ function sleep(ms: number): Promise<void> {
 }
 
 function parseProxyUrl(value: string): ProxyConfig {
-  const url = new URL(value);
+  const raw = value.trim();
+  if (!raw) {
+    throw new Error("Empty proxy value");
+  }
+
+  let normalized = raw;
+  if (!raw.includes("://")) {
+    const parts = raw.split(":");
+
+    // host:port:user:pass
+    if (parts.length === 4 && /^\d+$/.test(parts[1])) {
+      const [host, port, username, password] = parts;
+      normalized = `http://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${host}:${port}`;
+    } else if (/^[^:\s]+:\d+$/.test(raw) || raw.includes("@")) {
+      // host:port  OR user:pass@host:port
+      normalized = `http://${raw}`;
+    } else {
+      throw new Error(`Unsupported proxy format: ${raw}`);
+    }
+  }
+
+  const url = new URL(normalized);
   const protocol = url.protocol.replace(":", "");
   if (protocol !== "http" && protocol !== "https") {
     throw new Error(`Unsupported proxy protocol: ${value}`);
@@ -78,7 +99,32 @@ function getParsedProxyList(): ProxyConfig[] {
   if (parsedProxiesCache) {
     return parsedProxiesCache;
   }
-  parsedProxiesCache = env.proxy.list.map(parseProxyUrl);
+
+  const valid: ProxyConfig[] = [];
+  const invalid: Array<{ index: number; value: string; error: string }> = [];
+
+  for (let index = 0; index < env.proxy.list.length; index += 1) {
+    const value = env.proxy.list[index];
+    try {
+      valid.push(parseProxyUrl(value));
+    } catch (error) {
+      invalid.push({
+        index: index + 1,
+        value,
+        error: sanitizeError(error),
+      });
+    }
+  }
+
+  if (invalid.length > 0) {
+    logger.warn("Invalid proxies skipped", {
+      invalidCount: invalid.length,
+      configuredCount: env.proxy.list.length,
+      sample: invalid.slice(0, 5),
+    });
+  }
+
+  parsedProxiesCache = valid;
   return parsedProxiesCache;
 }
 

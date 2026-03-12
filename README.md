@@ -240,6 +240,17 @@ npm run proxy:check
 
 У логах буде `configured`, `healthy`, `selected` і `capacityAt30PerProxy`.
 Файл `proxies.txt` додано в `.gitignore`, щоб не комітити приватні проксі.
+Невалідні рядки проксі не падають весь процес: вони пропускаються з WARN-логом `Invalid proxies skipped`.
+
+Підтримувані формати рядка проксі:
+
+- `http://host:port`
+- `https://host:port`
+- `http://user:pass@host:port`
+- `https://user:pass@host:port`
+- `host:port`
+- `user:pass@host:port`
+- `host:port:user:pass`
 
 Щоб цілитись у `30` одночасних запитів на проксі:
 
