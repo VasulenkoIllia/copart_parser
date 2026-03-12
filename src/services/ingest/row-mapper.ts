@@ -90,11 +90,18 @@ export function mapCsvRow(record: Record<string, unknown>): IngestCandidate | nu
 
   const sourceLastUpdatedAt = sourceLastUpdatedRaw ? new Date(sourceLastUpdatedRaw) : null;
   const sourceCreatedAt = parseCreatedAt(sourceCreatedRaw);
+  const yardNumber = parseOptionalInt(yardNumberRaw);
 
   return {
     lotNumber,
-    yardNumber: parseOptionalInt(yardNumberRaw),
-    imageUrl: normalizeCopartLotImagesUrl(imageUrlRaw),
+    yardNumber,
+    imageUrl: normalizeCopartLotImagesUrl(imageUrlRaw, {
+      protocol: "https",
+      defaultCountry: "us",
+      defaultBrand: "cprt",
+      yardNumber,
+      defaultYardNumber: 1,
+    }),
     sourceLastUpdatedAt:
       sourceLastUpdatedAt && !Number.isNaN(sourceLastUpdatedAt.getTime())
         ? sourceLastUpdatedAt

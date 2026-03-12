@@ -153,7 +153,13 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
   const lotStartedAt = Date.now();
   const endpointProtocol = env.proxy.mode === "direct" ? "https" : "http";
   const endpointUrl =
-    normalizeCopartLotImagesUrl(candidate.imageUrl, { protocol: endpointProtocol }) ??
+    normalizeCopartLotImagesUrl(candidate.imageUrl, {
+      protocol: endpointProtocol,
+      defaultCountry: "us",
+      defaultBrand: "cprt",
+      yardNumber: candidate.yardNumber,
+      defaultYardNumber: 1,
+    }) ??
     candidate.imageUrl;
   const logResult = (meta: Record<string, unknown>): void => {
     logLotResult({

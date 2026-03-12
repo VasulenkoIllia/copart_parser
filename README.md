@@ -245,6 +245,7 @@ npm run proxy:check
 ### Обробка редіректів (важливо)
 
 - URL `inventoryv2.copart.io` нормалізується перед `photo:sync`: у `direct` режимі використовується `https://`, у `proxy/mixed` — `http://` (щоб уникати `socket hang up` на частині HTTP-проксі при прямому HTTPS CONNECT).
+- Для `lotImages` автоматично добудовуються обов'язкові query-параметри, якщо їх немає в CSV URL: `country=us`, `brand=cprt`, `yardNumber` (з лота, fallback `1`).
 - HTTP-клієнт має fallback ручного проходження `3xx + location`, якщо провайдер/проксі віддав редірект без фінального `2xx`.
 - `proxy preflight` робить fallback `HEAD -> GET` навіть коли `HEAD` падає по мережевій помилці (а не тільки при `405`), і для `https://inventoryv2...` додатково перевіряє `http://inventoryv2...`.
 
