@@ -6,6 +6,7 @@ import {
   CheckedLotImage,
   ImageCheckStatus,
   ImageVariant,
+  ParsedLotImageLink,
   PhotoLotCandidate,
   PhotoRunCounters,
 } from "./types";
@@ -20,6 +21,21 @@ interface LotCandidateRow extends RowDataPacket {
 
 interface NumberRow extends RowDataPacket {
   lot_number: number;
+}
+
+interface CachedImageRow extends RowDataPacket {
+  sequence: number;
+  variant: ImageVariant;
+  url: string;
+  http_status: number | null;
+  content_type: string | null;
+  content_length: number | null;
+  width: number | null;
+  height: number | null;
+  is_full_size: number;
+  check_status: ImageCheckStatus;
+  last_checked_at: Date | string | null;
+  url_hash: string;
 }
 
 export async function createPhotoRun(): Promise<number> {
@@ -178,6 +194,16 @@ export async function logPhotoAttempt(
   errorCode: string | null,
   errorMessage: string | null
 ): Promise<void> {
+  const shouldLog =
+    errorCode !== null ||
+    errorMessage !== null ||
+    httpStatus === 404 ||
+    (httpStatus !== null && (httpStatus < 200 || httpStatus >= 300));
+
+  if (!shouldLog) {
+    return;
+  }
+
   const pool = getPool();
   await pool.query(
     `
@@ -189,8 +215,95 @@ export async function logPhotoAttempt(
   );
 }
 
-function hashUrl(url: string): string {
+export function hashUrl(url: string): string {
   return createHash("sha256").update(url).digest("hex");
+}
+
+export async function fetchCachedGoodImages(
+  lotNumber: number,
+  links: ParsedLotImageLink[]
+): Promise<Map<string, CheckedLotImage>> {
+  if (links.length === 0) {
+    return new Map();
+  }
+
+  const bySequenceHash = new Map<string, ParsedLotImageLink>();
+  const hashes: string[] = [];
+  const seenHashes = new Set<string>();
+
+  for (const link of links) {
+    const urlHash = hashUrl(link.url);
+    bySequenceHash.set(`${link.sequence}:${urlHash}`, link);
+    if (!seenHashes.has(urlHash)) {
+      seenHashes.add(urlHash);
+      hashes.push(urlHash);
+    }
+  }
+
+  if (hashes.length === 0) {
+    return new Map();
+  }
+
+  const placeholders = hashes.map(() => "?").join(", ");
+  const pool = getPool();
+  const [rows] = await pool.query<CachedImageRow[]>(
+    `
+      SELECT
+        sequence,
+        variant,
+        url,
+        url_hash,
+        http_status,
+        content_type,
+        content_length,
+        width,
+        height,
+        is_full_size,
+        check_status,
+        last_checked_at
+      FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
+      WHERE
+        lot_number = ?
+        AND check_status = 'ok'
+        AND is_full_size = 1
+        AND url_hash IN (${placeholders})
+    `,
+    [lotNumber, ...hashes]
+  );
+
+  const cached = new Map<string, CheckedLotImage>();
+  for (const row of rows) {
+    const key = `${Number(row.sequence)}:${String(row.url_hash)}`;
+    const link = bySequenceHash.get(key);
+    if (!link) {
+      continue;
+    }
+
+    const lastCheckedAtRaw = row.last_checked_at;
+    const lastCheckedAt =
+      lastCheckedAtRaw instanceof Date
+        ? lastCheckedAtRaw
+        : lastCheckedAtRaw
+          ? new Date(lastCheckedAtRaw)
+          : new Date();
+
+    cached.set(key, {
+      lotNumber,
+      sequence: Number(row.sequence),
+      variant: row.variant,
+      url: String(row.url).trim(),
+      httpStatus: row.http_status === null ? null : Number(row.http_status),
+      contentType: row.content_type ?? null,
+      contentLength: row.content_length === null ? null : Number(row.content_length),
+      width: row.width === null ? null : Number(row.width),
+      height: row.height === null ? null : Number(row.height),
+      isFullSize: Number(row.is_full_size) === 1,
+      checkStatus: row.check_status,
+      lastCheckedAt,
+    });
+  }
+
+  return cached;
 }
 
 export async function replaceLotImages(
@@ -410,7 +523,7 @@ export function deriveVariant(
   if (isThumbNail) {
     return "thumb";
   }
-  if (isHdImage) {
+  if (isHdImage || normalized.includes("_hrs.")) {
     return "hd";
   }
   if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg") || normalized.endsWith(".png")) {
@@ -481,8 +594,7 @@ export function selectImagesForStorage(images: CheckedLotImage[]): CheckedLotIma
     const isGood =
       image.checkStatus === "ok" &&
       image.isFullSize &&
-      image.variant !== "thumb" &&
-      image.variant !== "video";
+      image.variant === "hd";
     if (!isGood) {
       continue;
     }
@@ -540,11 +652,7 @@ export function evaluateLotStatus(images: CheckedLotImage[]): {
   let badCount = 0;
 
   for (const image of relevant) {
-    const isGood =
-      image.checkStatus === "ok" &&
-      image.isFullSize &&
-      image.variant !== "thumb" &&
-      image.variant !== "video";
+    const isGood = image.checkStatus === "ok" && image.isFullSize && image.variant === "hd";
     if (isGood) {
       fullCount += 1;
     } else {

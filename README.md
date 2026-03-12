@@ -187,12 +187,15 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 
 ### Фото
 
-- Парсити всі варіанти URL з endpoint і перевіряти їх через HEAD/GET.
-- У `copart_media.lot_images` зберігати тільки якісні full-size фото:
-  - `check_status = ok`,
-  - `is_full_size = 1`,
-  - без `thumb`/`video`,
-  - всі унікальні good URL (накопичення між прогонами).
+- Парсити URL з endpoint `lotImages` і перевіряти через HEAD/GET тільки `hd` варіанти.
+- У `copart_media.lot_images` зберігати тільки якісні full-size фото.
+- Поточний performance-профіль: **перевіряються і зберігаються тільки `hd` фото** (`thumb`/`video`/`full` ігноруються).
+- Додано кеш перевірки по `url_hash`: якщо URL уже був `ok + full_size`, повторний `GET` пропускається.
+- У `photo_fetch_attempts` логуються тільки `404` і помилки (`error`/non-2xx), успішні `2xx/206` більше не засмічують таблицю.
+- `check_status = ok`,
+- `is_full_size = 1`,
+- без `thumb`/`video`,
+- всі унікальні good URL (накопичення між прогонами).
 - Для `partial` лотів запис фото працює в merge-режимі: вже знайдені good фото не видаляються при тимчасових збоях джерела.
 - Всі спроби запитів і помилки зберігати в `copart_media.photo_fetch_attempts`.
 

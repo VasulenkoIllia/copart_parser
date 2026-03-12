@@ -13,7 +13,9 @@ import {
   deleteExpired404Lots,
   deriveVariant,
   evaluateLotStatus,
+  fetchCachedGoodImages,
   fetchPhotoCandidates,
+  hashUrl,
   logPhotoAttempt,
   markLotPhotoMissingOn404,
   markLotPhotoMissingTemporary,
@@ -95,6 +97,11 @@ function parseEndpointPayload(
         Boolean(link.isEngineSound)
       );
 
+      // Performance mode: process only HD photos.
+      if (variant !== "hd") {
+        continue;
+      }
+
       const key = `${sequence}:${cleanUrl}`;
       if (!map.has(key)) {
         map.set(key, {
@@ -137,9 +144,22 @@ async function runWithConcurrency<T>(
 }
 
 async function inspectParsedLinks(links: ParsedLotImageLink[]): Promise<CheckedLotImage[]> {
+  if (links.length === 0) {
+    return [];
+  }
+
+  const lotNumber = links[0].lotNumber;
+  const cached = await fetchCachedGoodImages(lotNumber, links);
   const result: CheckedLotImage[] = [];
 
   for (const link of links) {
+    const cacheKey = `${link.sequence}:${hashUrl(link.url)}`;
+    const cachedHit = cached.get(cacheKey);
+    if (cachedHit) {
+      result.push(cachedHit);
+      continue;
+    }
+
     const checked = await inspectLotImage(link, async (attemptType, status, code, message) => {
       await logPhotoAttempt(link.lotNumber, link.url, attemptType, status, code, message);
     });
