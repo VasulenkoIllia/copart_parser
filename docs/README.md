@@ -50,6 +50,7 @@
 | 2026-03-13 | Remove partial photo state | Done | Активна runtime-модель спрощена до `unknown -> ok/missing`, старий `partial` прибрано з робочої схеми |
 | 2026-03-13 | Remove auto cleanup from media runtime | Done | Після `404` більше немає hard-delete/cleanup з `copart_media`; media використовується як persistent store фото |
 | 2026-03-13 | Benchmark defaults aligned to server profile | Done | `fresh-test.sh` за замовчуванням: `1000 lots`, `12 workers`, `150 concurrency`, `top-300 proxies`, `min-working=250` |
+| 2026-03-13 | Per-request proxy route cap | Done | Один HTTP-запит більше не перебирає весь пул; для benchmark дефолт `PROXY_MAX_ROUTES_PER_REQUEST=5` |
 | 2026-03-12 | Extended diagnostics logging | Done | Логи duration/progress/retry/backoff/slow HTTP для кращої діагностики |
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |
 | 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |

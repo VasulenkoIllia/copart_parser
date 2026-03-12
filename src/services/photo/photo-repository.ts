@@ -4,6 +4,8 @@ import env from "../../config/env";
 import { getPool } from "../../db/mysql";
 import {
   CheckedLotImage,
+  PhotoClusterRunSummary,
+  PhotoClusterRunWorkerRow,
   ImageCheckStatus,
   ImageVariant,
   ParsedLotImageLink,
@@ -34,13 +36,86 @@ interface CachedImageRow extends RowDataPacket {
   url_hash: string;
 }
 
+interface ClusterSummaryRow extends RowDataPacket {
+  workers_finished: number | null;
+  workers_succeeded: number | null;
+  workers_failed: number | null;
+  total_lots_scanned: number | null;
+  total_lots_processed: number | null;
+  total_lots_ok: number | null;
+  total_lots_missing: number | null;
+  total_images_upserted: number | null;
+  total_images_full_size: number | null;
+  total_images_bad_quality: number | null;
+  total_http_404_count: number | null;
+}
+
+interface ClusterWorkerRow extends RowDataPacket {
+  photo_run_id: number;
+  worker_index: number | null;
+  worker_total: number | null;
+  status: "running" | "success" | "failed";
+  lots_scanned: number;
+  lots_processed: number;
+  lots_ok: number;
+  lots_missing: number;
+  images_upserted: number;
+  images_full_size: number;
+  images_bad_quality: number;
+  http_404_count: number;
+  started_at: Date | string | null;
+  finished_at: Date | string | null;
+  duration_ms: number | null;
+  error_message: string | null;
+}
+
+function parseOptionalClusterRunId(): number | null {
+  const raw = process.env.PHOTO_CLUSTER_RUN_ID;
+  if (!raw || !raw.trim()) {
+    return null;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 export async function createPhotoRun(): Promise<number> {
+  const pool = getPool();
+  const clusterRunId = parseOptionalClusterRunId();
+  const [result] = await pool.query<ResultSetHeader>(
+    `
+      INSERT INTO \`${env.mysql.databaseCore}\`.\`photo_runs\`
+        (cluster_run_id, worker_index, worker_total, status)
+      VALUES (?, ?, ?, 'running')
+    `,
+    [clusterRunId, env.photo.workerIndex, env.photo.workerTotal]
+  );
+  return result.insertId;
+}
+
+export async function createPhotoClusterRun(selectedProxyCount: number): Promise<number> {
   const pool = getPool();
   const [result] = await pool.query<ResultSetHeader>(
     `
-      INSERT INTO \`${env.mysql.databaseCore}\`.\`photo_runs\` (status)
-      VALUES ('running')
-    `
+      INSERT INTO \`${env.mysql.databaseCore}\`.\`photo_cluster_runs\`
+        (status, worker_total, meta_json)
+      VALUES (
+        'running',
+        ?,
+        JSON_OBJECT(
+          'batchSizePerWorker', ?,
+          'fetchConcurrencyPerWorker', ?,
+          'selectedProxyCount', ?,
+          'proxyMode', ?
+        )
+      )
+    `,
+    [
+      env.photo.workerTotal,
+      env.photo.batchSize,
+      env.photo.fetchConcurrency,
+      selectedProxyCount,
+      env.proxy.mode,
+    ]
   );
   return result.insertId;
 }
@@ -69,7 +144,8 @@ export async function completePhotoRunSuccess(
           'batchSize', ?,
           'fetchConcurrency', ?,
           'workerTotal', ?,
-          'workerIndex', ?
+          'workerIndex', ?,
+          'clusterRunId', ?
         )
       WHERE id = ?
     `,
@@ -86,6 +162,7 @@ export async function completePhotoRunSuccess(
       env.photo.fetchConcurrency,
       env.photo.workerTotal,
       env.photo.workerIndex,
+      parseOptionalClusterRunId(),
       runId,
     ]
   );
@@ -112,7 +189,14 @@ export async function completePhotoRunFailure(
         images_bad_quality = ?,
         http_404_count = ?,
         deleted_lots_count = 0,
-        error_message = ?
+        error_message = ?,
+        meta_json = JSON_OBJECT(
+          'batchSize', ?,
+          'fetchConcurrency', ?,
+          'workerTotal', ?,
+          'workerIndex', ?,
+          'clusterRunId', ?
+        )
       WHERE id = ?
     `,
     [
@@ -125,7 +209,187 @@ export async function completePhotoRunFailure(
       counters.imagesBadQuality,
       counters.http404Count,
       errorMessage.slice(0, 65_000),
+      env.photo.batchSize,
+      env.photo.fetchConcurrency,
+      env.photo.workerTotal,
+      env.photo.workerIndex,
+      parseOptionalClusterRunId(),
       runId,
+    ]
+  );
+}
+
+export async function fetchPhotoClusterRunSummary(
+  clusterRunId: number
+): Promise<PhotoClusterRunSummary> {
+  const pool = getPool();
+  const [rows] = await pool.query<ClusterSummaryRow[]>(
+    `
+      SELECT
+        COUNT(*) AS workers_finished,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS workers_succeeded,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS workers_failed,
+        COALESCE(SUM(lots_scanned), 0) AS total_lots_scanned,
+        COALESCE(SUM(lots_processed), 0) AS total_lots_processed,
+        COALESCE(SUM(lots_ok), 0) AS total_lots_ok,
+        COALESCE(SUM(lots_missing), 0) AS total_lots_missing,
+        COALESCE(SUM(images_upserted), 0) AS total_images_upserted,
+        COALESCE(SUM(images_full_size), 0) AS total_images_full_size,
+        COALESCE(SUM(images_bad_quality), 0) AS total_images_bad_quality,
+        COALESCE(SUM(http_404_count), 0) AS total_http_404_count
+      FROM \`${env.mysql.databaseCore}\`.\`photo_runs\`
+      WHERE cluster_run_id = ?
+    `,
+    [clusterRunId]
+  );
+
+  const row = rows[0];
+  return {
+    workersFinished: Number(row?.workers_finished ?? 0),
+    workersSucceeded: Number(row?.workers_succeeded ?? 0),
+    workersFailed: Number(row?.workers_failed ?? 0),
+    totalLotsScanned: Number(row?.total_lots_scanned ?? 0),
+    totalLotsProcessed: Number(row?.total_lots_processed ?? 0),
+    totalLotsOk: Number(row?.total_lots_ok ?? 0),
+    totalLotsMissing: Number(row?.total_lots_missing ?? 0),
+    totalImagesUpserted: Number(row?.total_images_upserted ?? 0),
+    totalImagesFullSize: Number(row?.total_images_full_size ?? 0),
+    totalImagesBadQuality: Number(row?.total_images_bad_quality ?? 0),
+    totalHttp404Count: Number(row?.total_http_404_count ?? 0),
+  };
+}
+
+export async function fetchPhotoClusterRunWorkers(
+  clusterRunId: number
+): Promise<PhotoClusterRunWorkerRow[]> {
+  const pool = getPool();
+  const [rows] = await pool.query<ClusterWorkerRow[]>(
+    `
+      SELECT
+        id AS photo_run_id,
+        worker_index,
+        worker_total,
+        status,
+        lots_scanned,
+        lots_processed,
+        lots_ok,
+        lots_missing,
+        images_upserted,
+        images_full_size,
+        images_bad_quality,
+        http_404_count,
+        started_at,
+        finished_at,
+        TIMESTAMPDIFF(MICROSECOND, started_at, finished_at) DIV 1000 AS duration_ms,
+        error_message
+      FROM \`${env.mysql.databaseCore}\`.\`photo_runs\`
+      WHERE cluster_run_id = ?
+      ORDER BY worker_index ASC, id ASC
+    `,
+    [clusterRunId]
+  );
+
+  return rows.map(row => ({
+    photoRunId: Number(row.photo_run_id),
+    workerIndex: Number(row.worker_index ?? 0),
+    workerTotal: Number(row.worker_total ?? 0),
+    status: row.status,
+    lotsScanned: Number(row.lots_scanned),
+    lotsProcessed: Number(row.lots_processed),
+    lotsOk: Number(row.lots_ok),
+    lotsMissing: Number(row.lots_missing),
+    imagesUpserted: Number(row.images_upserted),
+    imagesFullSize: Number(row.images_full_size),
+    imagesBadQuality: Number(row.images_bad_quality),
+    http404Count: Number(row.http_404_count),
+    startedAt:
+      row.started_at instanceof Date ? row.started_at : row.started_at ? new Date(row.started_at) : null,
+    finishedAt:
+      row.finished_at instanceof Date ? row.finished_at : row.finished_at ? new Date(row.finished_at) : null,
+    durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+    errorMessage: row.error_message ?? null,
+  }));
+}
+
+export async function completePhotoClusterRunSuccess(clusterRunId: number): Promise<void> {
+  const summary = await fetchPhotoClusterRunSummary(clusterRunId);
+  const pool = getPool();
+  await pool.query(
+    `
+      UPDATE \`${env.mysql.databaseCore}\`.\`photo_cluster_runs\`
+      SET
+        status = 'success',
+        finished_at = CURRENT_TIMESTAMP(3),
+        workers_finished = ?,
+        workers_succeeded = ?,
+        workers_failed = ?,
+        total_lots_scanned = ?,
+        total_lots_processed = ?,
+        total_lots_ok = ?,
+        total_lots_missing = ?,
+        total_images_upserted = ?,
+        total_images_full_size = ?,
+        total_images_bad_quality = ?,
+        total_http_404_count = ?
+      WHERE id = ?
+    `,
+    [
+      summary.workersFinished,
+      summary.workersSucceeded,
+      summary.workersFailed,
+      summary.totalLotsScanned,
+      summary.totalLotsProcessed,
+      summary.totalLotsOk,
+      summary.totalLotsMissing,
+      summary.totalImagesUpserted,
+      summary.totalImagesFullSize,
+      summary.totalImagesBadQuality,
+      summary.totalHttp404Count,
+      clusterRunId,
+    ]
+  );
+}
+
+export async function completePhotoClusterRunFailure(
+  clusterRunId: number,
+  errorMessage: string
+): Promise<void> {
+  const summary = await fetchPhotoClusterRunSummary(clusterRunId);
+  const pool = getPool();
+  await pool.query(
+    `
+      UPDATE \`${env.mysql.databaseCore}\`.\`photo_cluster_runs\`
+      SET
+        status = 'failed',
+        finished_at = CURRENT_TIMESTAMP(3),
+        workers_finished = ?,
+        workers_succeeded = ?,
+        workers_failed = ?,
+        total_lots_scanned = ?,
+        total_lots_processed = ?,
+        total_lots_ok = ?,
+        total_lots_missing = ?,
+        total_images_upserted = ?,
+        total_images_full_size = ?,
+        total_images_bad_quality = ?,
+        total_http_404_count = ?,
+        error_message = ?
+      WHERE id = ?
+    `,
+    [
+      summary.workersFinished,
+      summary.workersSucceeded,
+      summary.workersFailed,
+      summary.totalLotsScanned,
+      summary.totalLotsProcessed,
+      summary.totalLotsOk,
+      summary.totalLotsMissing,
+      summary.totalImagesUpserted,
+      summary.totalImagesFullSize,
+      summary.totalImagesBadQuality,
+      summary.totalHttp404Count,
+      errorMessage.slice(0, 65_000),
+      clusterRunId,
     ]
   );
 }

@@ -6,6 +6,12 @@ import { getPool } from "../../db/mysql";
 import { getActiveProxyUrls, prepareProxyPoolWithHealthcheck } from "../../lib/http-client";
 import { logger } from "../../lib/logger";
 import { normalizeCopartLotImagesUrl } from "../../lib/url-utils";
+import {
+  completePhotoClusterRunFailure,
+  completePhotoClusterRunSuccess,
+  createPhotoClusterRun,
+  fetchPhotoClusterRunWorkers,
+} from "./photo-repository";
 
 interface WorkerRunResult {
   workerIndex: number;
@@ -219,8 +225,17 @@ export async function runPhotoCluster(): Promise<void> {
   }
 
   const workerEnvOverrides = await buildWorkerProxyOverrides();
+  const selectedProxyCount = workerEnvOverrides.PROXY_LIST
+    ? workerEnvOverrides.PROXY_LIST.split(",").filter(Boolean).length
+    : env.proxy.list.length;
+  const clusterRunId = await createPhotoClusterRun(selectedProxyCount);
+  const workerEnv = {
+    ...workerEnvOverrides,
+    PHOTO_CLUSTER_RUN_ID: String(clusterRunId),
+  };
 
   logger.info("Photo cluster started", {
+    clusterRunId,
     workerTotal,
     fetchConcurrencyPerWorker: env.photo.fetchConcurrency,
     batchSizePerWorker: env.photo.batchSize,
@@ -229,28 +244,57 @@ export async function runPhotoCluster(): Promise<void> {
   });
 
   const startedAt = Date.now();
-  const workerPromises: Promise<WorkerRunResult>[] = [];
-  for (let workerIndex = 0; workerIndex < workerTotal; workerIndex += 1) {
-    workerPromises.push(runWorker(workerIndex, workerTotal, workerEnvOverrides));
-  }
+  try {
+    const workerPromises: Promise<WorkerRunResult>[] = [];
+    for (let workerIndex = 0; workerIndex < workerTotal; workerIndex += 1) {
+      workerPromises.push(runWorker(workerIndex, workerTotal, workerEnv));
+    }
 
-  const results = await Promise.all(workerPromises);
-  const failed = results.filter(result => result.exitCode !== 0);
+    const results = await Promise.all(workerPromises);
+    const failed = results.filter(result => result.exitCode !== 0);
+    if (failed.length > 0) {
+      await completePhotoClusterRunFailure(
+        clusterRunId,
+        `photo:cluster failed: ${failed.length}/${workerTotal} workers exited with non-zero code`
+      );
+    } else {
+      await completePhotoClusterRunSuccess(clusterRunId);
+    }
 
-  logger.info("Photo cluster finished", {
-    workerTotal,
-    durationMs: Date.now() - startedAt,
-    workerResults: results.map(result => ({
-      workerIndex: result.workerIndex,
-      exitCode: result.exitCode,
-      signal: result.signal,
-      durationMs: result.durationMs,
-    })),
-  });
+    const workers = await fetchPhotoClusterRunWorkers(clusterRunId);
+    logger.info("Photo cluster finished", {
+      clusterRunId,
+      workerTotal,
+      durationMs: Date.now() - startedAt,
+      workerResults: results.map(result => ({
+        workerIndex: result.workerIndex,
+        exitCode: result.exitCode,
+        signal: result.signal,
+        durationMs: result.durationMs,
+      })),
+      workerRuns: workers.map(worker => ({
+        photoRunId: worker.photoRunId,
+        workerIndex: worker.workerIndex,
+        status: worker.status,
+        lotsProcessed: worker.lotsProcessed,
+        lotsOk: worker.lotsOk,
+        lotsMissing: worker.lotsMissing,
+        imagesUpserted: worker.imagesUpserted,
+        http404Count: worker.http404Count,
+        durationMs: worker.durationMs,
+      })),
+    });
 
-  if (failed.length > 0) {
-    throw new Error(
-      `photo:cluster failed: ${failed.length}/${workerTotal} workers exited with non-zero code`
+    if (failed.length > 0) {
+      throw new Error(
+        `photo:cluster failed: ${failed.length}/${workerTotal} workers exited with non-zero code`
+      );
+    }
+  } catch (error) {
+    await completePhotoClusterRunFailure(
+      clusterRunId,
+      error instanceof Error ? error.message : String(error)
     );
+    throw error;
   }
 }

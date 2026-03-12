@@ -41,6 +41,39 @@ export interface PhotoRunCounters {
   http404Count: number;
 }
 
+export interface PhotoClusterRunWorkerRow {
+  photoRunId: number;
+  workerIndex: number;
+  workerTotal: number;
+  status: "running" | "success" | "failed";
+  lotsScanned: number;
+  lotsProcessed: number;
+  lotsOk: number;
+  lotsMissing: number;
+  imagesUpserted: number;
+  imagesFullSize: number;
+  imagesBadQuality: number;
+  http404Count: number;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  durationMs: number | null;
+  errorMessage: string | null;
+}
+
+export interface PhotoClusterRunSummary {
+  workersFinished: number;
+  workersSucceeded: number;
+  workersFailed: number;
+  totalLotsScanned: number;
+  totalLotsProcessed: number;
+  totalLotsOk: number;
+  totalLotsMissing: number;
+  totalImagesUpserted: number;
+  totalImagesFullSize: number;
+  totalImagesBadQuality: number;
+  totalHttp404Count: number;
+}
+
 export interface LotImagesEndpointPayload {
   imgCount?: number;
   lotImages?: Array<{

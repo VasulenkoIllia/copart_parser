@@ -602,6 +602,10 @@ export async function prepareProxyPoolWithHealthcheck(
     return;
   }
 
+  if (preflightCompleted && preflightTargetUrl === effectiveHealthcheckUrl) {
+    return;
+  }
+
   if (!env.proxy.preflightEnabled) {
     activeProxiesCache = configured.slice(0, Math.min(env.proxy.preflightTopN, configured.length));
     preflightCompleted = true;
@@ -615,10 +619,6 @@ export async function prepareProxyPoolWithHealthcheck(
       topN: env.proxy.preflightTopN,
       sampleSelected: activeProxiesCache.slice(0, 3).map(proxyLabel),
     });
-    return;
-  }
-
-  if (preflightCompleted && preflightTargetUrl === effectiveHealthcheckUrl) {
     return;
   }
 
@@ -661,6 +661,21 @@ function getActiveProxyList(): ProxyConfig[] {
   return getParsedProxyList();
 }
 
+function limitProxyRoutes(routes: Array<ProxyConfig | null>): Array<ProxyConfig | null> {
+  if (routes.length <= env.proxy.maxRoutesPerRequest) {
+    return routes;
+  }
+
+  if (env.proxy.mode === "mixed") {
+    const directFallback = routes.includes(null) ? [null] : [];
+    const proxyOnly = routes.filter((route): route is ProxyConfig => route !== null);
+    const proxySlots = Math.max(0, env.proxy.maxRoutesPerRequest - directFallback.length);
+    return [...proxyOnly.slice(0, proxySlots), ...directFallback];
+  }
+
+  return routes.slice(0, env.proxy.maxRoutesPerRequest);
+}
+
 function getProxyRouteOrder(): Array<ProxyConfig | null> {
   const parsed = getActiveProxyList();
 
@@ -683,11 +698,11 @@ function getProxyRouteOrder(): Array<ProxyConfig | null> {
   proxyIndex = (proxyIndex + 1) % parsed.length;
 
   if (env.proxy.mode === "proxy") {
-    return ordered;
+    return limitProxyRoutes(ordered);
   }
 
   if (env.proxy.mode === "mixed") {
-    return [...ordered, null];
+    return limitProxyRoutes([...ordered, null]);
   }
 
   return [null];

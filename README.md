@@ -108,6 +108,7 @@ make fresh-test
 - `PHOTO_FETCH_CONCURRENCY=150`
 - `PHOTO_PROGRESS_EVERY_LOTS=10`
 - `PROXY_AUTO_SELECT_FOR_PHOTO=true`
+- `PROXY_MAX_ROUTES_PER_REQUEST=5`
 - `PROXY_PREFLIGHT_TOP_N=300`
 - `PROXY_PREFLIGHT_MIN_WORKING=250`
 - `PHOTO_VALIDATE_BY_HEAD_FIRST=false`
@@ -263,13 +264,14 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - `PROXY_PREFLIGHT_TIMEOUT_MS=7000`
 - `PROXY_PREFLIGHT_MIN_WORKING=5`
 - `PROXY_PREFLIGHT_STRICT=false` (`true` -> падати, якщо робочих менше `MIN_WORKING`)
+- `PROXY_MAX_ROUTES_PER_REQUEST=5` — скільки top-проксі максимум пробує один HTTP-запит, щоб не було довгих "хвостів" на 300 послідовних proxy-route.
 
 Автовідбір проксі під фото (рекомендовано для швидкості):
 
 - `PROXY_AUTO_SELECT_FOR_PHOTO=true` — у `photo:cluster` перед стартом воркерів береться 1 реальний URL фото з БД і preflight виконується саме по ньому.
 - `PROXY_AUTO_SELECT_PROBE_LOTS=20` — скільки останніх лотів перевіряти, щоб знайти валідний URL фото для benchmark.
 - Рекомендований розмір робочого пулу: `PROXY_PREFLIGHT_TOP_N=250..350` (зазвичай найкращий баланс швидкості/стабільності).
-- Для server benchmark-профілю в `fresh-test.sh` зафіксовано дефолт: `PROXY_PREFLIGHT_TOP_N=300`, `PROXY_PREFLIGHT_MIN_WORKING=250`.
+- Для server benchmark-профілю в `fresh-test.sh` зафіксовано дефолт: `PROXY_PREFLIGHT_TOP_N=300`, `PROXY_PREFLIGHT_MIN_WORKING=250`, `PROXY_MAX_ROUTES_PER_REQUEST=5`.
 - Після автовідбору воркери отримують тільки selected pool і працюють без повторного preflight.
 
 Ручна перевірка пулу:
@@ -344,6 +346,7 @@ docker compose run --rm \
   -e PHOTO_WORKER_TOTAL=12 \
   -e PHOTO_FETCH_CONCURRENCY=150 \
   -e PROXY_AUTO_SELECT_FOR_PHOTO=true \
+  -e PROXY_MAX_ROUTES_PER_REQUEST=5 \
   -e PROXY_PREFLIGHT_TOP_N=300 \
   -e PROXY_PREFLIGHT_MIN_WORKING=250 \
   app node dist/index.js photo:cluster
@@ -352,7 +355,7 @@ docker compose run --rm \
 Альтернатива через `make`:
 
 ```bash
-PHOTO_WORKER_TOTAL=12 PHOTO_FETCH_CONCURRENCY=150 PROXY_AUTO_SELECT_FOR_PHOTO=true PROXY_PREFLIGHT_TOP_N=300 PROXY_PREFLIGHT_MIN_WORKING=250 make photo-cluster
+PHOTO_WORKER_TOTAL=12 PHOTO_FETCH_CONCURRENCY=150 PROXY_AUTO_SELECT_FOR_PHOTO=true PROXY_MAX_ROUTES_PER_REQUEST=5 PROXY_PREFLIGHT_TOP_N=300 PROXY_PREFLIGHT_MIN_WORKING=250 make photo-cluster
 ```
 
 Гарантія без дублювання лотів між воркерами:
