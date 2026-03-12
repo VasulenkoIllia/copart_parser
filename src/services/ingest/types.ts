@@ -16,6 +16,27 @@ export interface IngestCounters {
   rowsUnchanged: number;
 }
 
+export interface CsvIngestRunSummary {
+  runId: number;
+  sourceUrl: string;
+  rowsTotal: number;
+  rowsValid: number;
+  rowsInvalid: number;
+  rowsInserted: number;
+  rowsUpdated: number;
+  rowsUnchanged: number;
+  hydratedLotsFromMedia: number;
+  prunedLots: number;
+  durationMs: number;
+  maxRows: number | null;
+  maxRowsReached: boolean;
+}
+
+export interface CsvIngestExecutionResult {
+  executed: boolean;
+  summary?: CsvIngestRunSummary;
+}
+
 export interface UpsertBatchResult {
   inserted: number;
   updated: number;

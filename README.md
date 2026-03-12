@@ -74,6 +74,58 @@ make migrate
 - `make proxy-check` — перевірка проксі-пулу перед запуском.
 - `make fresh-test` — повний чистий тестовий цикл (`db-drop -> migrate -> ingest(1000) -> photo:cluster -> SQL summary`).
 
+## Автоматичний режим
+
+Для бойового автооновлення кожні 5 годин:
+
+1. Заповнити `.env`:
+
+```bash
+INGEST_CRON=0 0,5,10,15,20 * * *
+PHOTO_RETRY_CRON=
+SCHEDULER_RUN_ON_START=true
+
+HTTP_MODE=proxy
+PROXY_LIST_FILE=./proxies.txt
+PROXY_AUTO_SELECT_FOR_PHOTO=true
+PROXY_MAX_ROUTES_PER_REQUEST=5
+PROXY_PREFLIGHT_TOP_N=300
+PROXY_PREFLIGHT_MIN_WORKING=250
+
+PHOTO_WORKER_TOTAL=12
+PHOTO_FETCH_CONCURRENCY=150
+PHOTO_PROGRESS_EVERY_LOTS=10
+PHOTO_VALIDATE_BY_HEAD_FIRST=false
+PHOTO_ENDPOINT_RETRIES=1
+PHOTO_IMAGE_RETRIES=1
+MYSQL_POOL_MAX=10
+
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+TELEGRAM_SEND_SUCCESS_SUMMARY=true
+TELEGRAM_SEND_ERROR_ALERTS=true
+```
+
+2. Застосувати міграції і запустити scheduler:
+
+```bash
+docker compose build app
+docker compose run --rm app node dist/index.js db:migrate
+docker compose up -d mysql app
+```
+
+Якщо `PHOTO_WORKER_TOTAL > 1`, scheduler тепер запускає повний pipeline як `ingest + photo:cluster`, а не одиночний `photo:sync`.
+
+Після кожного успішного циклу в Telegram приходить один зведений summary:
+
+- скільки лотів було в новому CSV;
+- скільки було нових / updated / unchanged;
+- скільки лотів віддали `endpoint 404`;
+- скільки лотів `ok/missing`;
+- скільки фото було збережено;
+- час `ingest`, час `photo`, загальний час оновлення.
+
 Команди для "чистого" запуску:
 
 - `make db-reset` — швидке очищення runtime-таблиць (дані лотів/фото/рани).

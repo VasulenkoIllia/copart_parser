@@ -9,7 +9,7 @@ import {
   upsertLotsBatch,
 } from "./lot-repository";
 import { mapCsvRow } from "./row-mapper";
-import { IngestCandidate, IngestCounters } from "./types";
+import { CsvIngestExecutionResult, CsvIngestRunSummary, IngestCandidate, IngestCounters } from "./types";
 import env from "../../config/env";
 import { withAppLock } from "../locks/db-lock";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
@@ -67,7 +67,9 @@ async function flushBatch(
   }
 }
 
-async function executeCsvIngest(): Promise<void> {
+async function executeCsvIngest(
+  options: { notifySuccess?: boolean; notifyError?: boolean } = {}
+): Promise<CsvIngestRunSummary> {
   const startedAt = Date.now();
   const sourceUrl = getSourceDescriptor();
   const counters = createCounters();
@@ -171,7 +173,23 @@ async function executeCsvIngest(): Promise<void> {
       maxRowsReached,
     });
 
-    if (env.telegram.sendSuccessSummary) {
+    const summary: CsvIngestRunSummary = {
+      runId,
+      sourceUrl: toLoggableSource(sourceUrl),
+      rowsTotal: counters.rowsTotal,
+      rowsValid: counters.rowsValid,
+      rowsInvalid: counters.rowsInvalid,
+      rowsInserted: counters.rowsInserted,
+      rowsUpdated: counters.rowsUpdated,
+      rowsUnchanged: counters.rowsUnchanged,
+      hydratedLotsFromMedia: hydratedLots,
+      prunedLots,
+      durationMs,
+      maxRows: maxRows > 0 ? maxRows : null,
+      maxRowsReached,
+    };
+
+    if ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary) {
       await sendTelegramMessage(
         [
           "[CSV INGEST] success",
@@ -186,6 +204,8 @@ async function executeCsvIngest(): Promise<void> {
         ].join("\n")
       );
     }
+
+    return summary;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const durationMs = Date.now() - startedAt;
@@ -195,16 +215,23 @@ async function executeCsvIngest(): Promise<void> {
       counters,
       durationMs,
     });
-    await sendTelegramError("CSV INGEST FAILED", error);
+    if (options.notifyError ?? true) {
+      await sendTelegramError("CSV INGEST FAILED", error);
+    }
     throw error;
   }
 }
 
-export async function runCsvIngest(): Promise<boolean> {
-  const locked = await withAppLock("csv_ingest", executeCsvIngest);
+export async function runCsvIngest(
+  options: { notifySuccess?: boolean; notifyError?: boolean } = {}
+): Promise<CsvIngestExecutionResult> {
+  const locked = await withAppLock("csv_ingest", () => executeCsvIngest(options));
   if (locked === null) {
     logger.warn("CSV ingest skipped because another run owns the lock");
-    return false;
+    return { executed: false };
   }
-  return true;
+  return {
+    executed: true,
+    summary: locked,
+  };
 }

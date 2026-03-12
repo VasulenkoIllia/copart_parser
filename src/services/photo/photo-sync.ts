@@ -28,6 +28,8 @@ import {
   ParsedLotImageLink,
   PhotoLotCandidate,
   PhotoRunCounters,
+  PhotoSyncExecutionResult,
+  PhotoSyncRunSummary,
 } from "./types";
 
 function logLotResult(meta: Record<string, unknown>): void {
@@ -47,6 +49,7 @@ function createCounters(): PhotoRunCounters {
     imagesFullSize: 0,
     imagesBadQuality: 0,
     http404Count: 0,
+    endpoint404Lots: 0,
   };
 }
 
@@ -220,6 +223,7 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
       counters.lotsProcessed += 1;
       counters.lotsMissing += 1;
       counters.http404Count += 1;
+      counters.endpoint404Lots += 1;
       return;
     }
 
@@ -321,7 +325,9 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
   }
 }
 
-async function executePhotoSync(): Promise<void> {
+async function executePhotoSync(
+  options: { notifySuccess?: boolean; notifyError?: boolean } = {}
+): Promise<PhotoSyncRunSummary> {
   const startedAt = Date.now();
   const counters = createCounters();
   const runId = await createPhotoRun();
@@ -383,7 +389,24 @@ async function executePhotoSync(): Promise<void> {
         durationMs > 0 ? Number(((counters.imagesUpserted / durationMs) * 60_000).toFixed(2)) : 0,
     });
 
-    if (env.telegram.sendSuccessSummary) {
+    const summary: PhotoSyncRunSummary = {
+      runId,
+      mode: "sync",
+      workerTotal: env.photo.workerTotal,
+      workerIndex: env.photo.workerIndex,
+      lotsScanned: counters.lotsScanned,
+      lotsProcessed: counters.lotsProcessed,
+      lotsOk: counters.lotsOk,
+      lotsMissing: counters.lotsMissing,
+      imagesUpserted: counters.imagesUpserted,
+      imagesFullSize: counters.imagesFullSize,
+      imagesBadQuality: counters.imagesBadQuality,
+      http404Count: counters.http404Count,
+      endpoint404Lots: counters.endpoint404Lots,
+      durationMs,
+    };
+
+    if ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary) {
       await sendTelegramMessage(
         [
           "[PHOTO SYNC] success",
@@ -395,9 +418,12 @@ async function executePhotoSync(): Promise<void> {
           `images_full_size=${counters.imagesFullSize}`,
           `images_bad_quality=${counters.imagesBadQuality}`,
           `http_404_count=${counters.http404Count}`,
+          `endpoint_404_lots=${counters.endpoint404Lots}`,
         ].join("\n")
       );
     }
+
+    return summary;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const durationMs = Date.now() - startedAt;
@@ -407,12 +433,16 @@ async function executePhotoSync(): Promise<void> {
       durationMs,
       counters,
     });
-    await sendTelegramError("PHOTO SYNC FAILED", error);
+    if (options.notifyError ?? true) {
+      await sendTelegramError("PHOTO SYNC FAILED", error);
+    }
     throw error;
   }
 }
 
-export async function runPhotoSync(): Promise<boolean> {
+export async function runPhotoSync(
+  options: { notifySuccess?: boolean; notifyError?: boolean } = {}
+): Promise<PhotoSyncExecutionResult> {
   const lockName =
     env.photo.workerTotal > 1 ? `photo_sync_worker_${env.photo.workerIndex}` : "photo_sync";
   const locked = await withAppLock(lockName, async () => {
@@ -426,7 +456,7 @@ export async function runPhotoSync(): Promise<boolean> {
       preflightCompleted: proxySnapshot.preflightCompleted,
     });
 
-    await executePhotoSync();
+    return executePhotoSync(options);
   });
   if (locked === null) {
     logger.warn("Photo sync skipped because another run owns the lock", {
@@ -434,7 +464,10 @@ export async function runPhotoSync(): Promise<boolean> {
       workerTotal: env.photo.workerTotal,
       workerIndex: env.photo.workerIndex,
     });
-    return false;
+    return { executed: false };
   }
-  return true;
+  return {
+    executed: true,
+    summary: locked,
+  };
 }

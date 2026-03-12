@@ -51,6 +51,7 @@
 | 2026-03-13 | Remove auto cleanup from media runtime | Done | Після `404` більше немає hard-delete/cleanup з `copart_media`; media використовується як persistent store фото |
 | 2026-03-13 | Benchmark defaults aligned to server profile | Done | `fresh-test.sh` за замовчуванням: `1000 lots`, `12 workers`, `150 concurrency`, `top-300 proxies`, `min-working=250` |
 | 2026-03-13 | Per-request proxy route cap | Done | Один HTTP-запит більше не перебирає весь пул; для benchmark дефолт `PROXY_MAX_ROUTES_PER_REQUEST=5` |
+| 2026-03-13 | Photo cluster DB audit | Done | Додано `photo_cluster_runs` + прив'язку worker-run до `cluster_run_id` у `photo_runs` |
 | 2026-03-12 | Extended diagnostics logging | Done | Логи duration/progress/retry/backoff/slow HTTP для кращої діагностики |
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |
 | 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |
@@ -90,6 +91,7 @@
 | 2026-03-13 | `CSV_LOCAL_FILE=/tmp/copart_small_a.csv INGEST_MAX_ROWS=0 npm run ingest:csv` | Passed | Snapshot ingest зберіг тільки поточний CSV у core, media не чистилась |
 | 2026-03-13 | `CSV_LOCAL_FILE=/tmp/copart_small_b.csv INGEST_MAX_ROWS=0 npm run ingest:csv` | Passed | Другий snapshot prune прибрав відсутній лот тільки з core; media лишилась без cleanup |
 | 2026-03-13 | Isolated verify DB scenario (`copart_core_verify` / `copart_media_verify`) | Passed | Після seed одного media-лота кандидатом лишився тільки лот без фото; після нового CSV core став snapshot, media зберегла старий лот |
+| 2026-03-13 | Server benchmark: `fresh-test` (`12 workers`, `150 concurrency`, `top-300 proxies`) | Passed | `photo_cluster_runs`: `1000 lots / 11.63s`, `lots_ok=697`, `lots_missing=303`, `images_upserted=7754`; worker durations `9.30s..11.31s`, всі `12/12` воркерів `success` |
 
 ## В роботі
 

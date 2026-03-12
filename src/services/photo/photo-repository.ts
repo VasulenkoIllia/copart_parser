@@ -4,6 +4,7 @@ import env from "../../config/env";
 import { getPool } from "../../db/mysql";
 import {
   CheckedLotImage,
+  PhotoClusterRunResult,
   PhotoClusterRunSummary,
   PhotoClusterRunWorkerRow,
   ImageCheckStatus,
@@ -48,6 +49,7 @@ interface ClusterSummaryRow extends RowDataPacket {
   total_images_full_size: number | null;
   total_images_bad_quality: number | null;
   total_http_404_count: number | null;
+  total_endpoint_404_lots: number | null;
 }
 
 interface ClusterWorkerRow extends RowDataPacket {
@@ -63,6 +65,7 @@ interface ClusterWorkerRow extends RowDataPacket {
   images_full_size: number;
   images_bad_quality: number;
   http_404_count: number;
+  endpoint_404_lots: number | null;
   started_at: Date | string | null;
   finished_at: Date | string | null;
   duration_ms: number | null;
@@ -145,7 +148,8 @@ export async function completePhotoRunSuccess(
           'fetchConcurrency', ?,
           'workerTotal', ?,
           'workerIndex', ?,
-          'clusterRunId', ?
+          'clusterRunId', ?,
+          'endpoint404Lots', ?
         )
       WHERE id = ?
     `,
@@ -163,6 +167,7 @@ export async function completePhotoRunSuccess(
       env.photo.workerTotal,
       env.photo.workerIndex,
       parseOptionalClusterRunId(),
+      counters.endpoint404Lots,
       runId,
     ]
   );
@@ -195,7 +200,8 @@ export async function completePhotoRunFailure(
           'fetchConcurrency', ?,
           'workerTotal', ?,
           'workerIndex', ?,
-          'clusterRunId', ?
+          'clusterRunId', ?,
+          'endpoint404Lots', ?
         )
       WHERE id = ?
     `,
@@ -214,6 +220,7 @@ export async function completePhotoRunFailure(
       env.photo.workerTotal,
       env.photo.workerIndex,
       parseOptionalClusterRunId(),
+      counters.endpoint404Lots,
       runId,
     ]
   );
@@ -236,7 +243,15 @@ export async function fetchPhotoClusterRunSummary(
         COALESCE(SUM(images_upserted), 0) AS total_images_upserted,
         COALESCE(SUM(images_full_size), 0) AS total_images_full_size,
         COALESCE(SUM(images_bad_quality), 0) AS total_images_bad_quality,
-        COALESCE(SUM(http_404_count), 0) AS total_http_404_count
+        COALESCE(SUM(http_404_count), 0) AS total_http_404_count,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.endpoint404Lots')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_endpoint_404_lots
       FROM \`${env.mysql.databaseCore}\`.\`photo_runs\`
       WHERE cluster_run_id = ?
     `,
@@ -256,6 +271,7 @@ export async function fetchPhotoClusterRunSummary(
     totalImagesFullSize: Number(row?.total_images_full_size ?? 0),
     totalImagesBadQuality: Number(row?.total_images_bad_quality ?? 0),
     totalHttp404Count: Number(row?.total_http_404_count ?? 0),
+    totalEndpoint404Lots: Number(row?.total_endpoint_404_lots ?? 0),
   };
 }
 
@@ -278,6 +294,9 @@ export async function fetchPhotoClusterRunWorkers(
         images_full_size,
         images_bad_quality,
         http_404_count,
+        CAST(
+          COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.endpoint404Lots')), '0') AS UNSIGNED
+        ) AS endpoint_404_lots,
         started_at,
         finished_at,
         TIMESTAMPDIFF(MICROSECOND, started_at, finished_at) DIV 1000 AS duration_ms,
@@ -302,6 +321,7 @@ export async function fetchPhotoClusterRunWorkers(
     imagesFullSize: Number(row.images_full_size),
     imagesBadQuality: Number(row.images_bad_quality),
     http404Count: Number(row.http_404_count),
+    endpoint404Lots: Number(row.endpoint_404_lots ?? 0),
     startedAt:
       row.started_at instanceof Date ? row.started_at : row.started_at ? new Date(row.started_at) : null,
     finishedAt:
@@ -309,6 +329,20 @@ export async function fetchPhotoClusterRunWorkers(
     durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
     errorMessage: row.error_message ?? null,
   }));
+}
+
+export async function fetchPhotoClusterRunResult(
+  clusterRunId: number,
+  durationMs: number
+): Promise<PhotoClusterRunResult> {
+  const summary = await fetchPhotoClusterRunSummary(clusterRunId);
+  return {
+    clusterRunId,
+    mode: "cluster",
+    workerTotal: env.photo.workerTotal,
+    durationMs,
+    ...summary,
+  };
 }
 
 export async function completePhotoClusterRunSuccess(clusterRunId: number): Promise<void> {
@@ -331,6 +365,12 @@ export async function completePhotoClusterRunSuccess(clusterRunId: number): Prom
         total_images_full_size = ?,
         total_images_bad_quality = ?,
         total_http_404_count = ?
+        ,meta_json = JSON_OBJECT(
+          'totalEndpoint404Lots', ?,
+          'workerTotal', ?,
+          'batchSizePerWorker', ?,
+          'fetchConcurrencyPerWorker', ?
+        )
       WHERE id = ?
     `,
     [
@@ -345,6 +385,10 @@ export async function completePhotoClusterRunSuccess(clusterRunId: number): Prom
       summary.totalImagesFullSize,
       summary.totalImagesBadQuality,
       summary.totalHttp404Count,
+      summary.totalEndpoint404Lots,
+      env.photo.workerTotal,
+      env.photo.batchSize,
+      env.photo.fetchConcurrency,
       clusterRunId,
     ]
   );
@@ -373,7 +417,13 @@ export async function completePhotoClusterRunFailure(
         total_images_full_size = ?,
         total_images_bad_quality = ?,
         total_http_404_count = ?,
-        error_message = ?
+        error_message = ?,
+        meta_json = JSON_OBJECT(
+          'totalEndpoint404Lots', ?,
+          'workerTotal', ?,
+          'batchSizePerWorker', ?,
+          'fetchConcurrencyPerWorker', ?
+        )
       WHERE id = ?
     `,
     [
@@ -389,6 +439,10 @@ export async function completePhotoClusterRunFailure(
       summary.totalImagesBadQuality,
       summary.totalHttp404Count,
       errorMessage.slice(0, 65_000),
+      summary.totalEndpoint404Lots,
+      env.photo.workerTotal,
+      env.photo.batchSize,
+      env.photo.fetchConcurrency,
       clusterRunId,
     ]
   );

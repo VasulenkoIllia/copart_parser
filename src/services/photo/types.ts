@@ -39,6 +39,29 @@ export interface PhotoRunCounters {
   imagesFullSize: number;
   imagesBadQuality: number;
   http404Count: number;
+  endpoint404Lots: number;
+}
+
+export interface PhotoSyncRunSummary {
+  runId: number;
+  mode: "sync";
+  workerTotal: number;
+  workerIndex: number;
+  lotsScanned: number;
+  lotsProcessed: number;
+  lotsOk: number;
+  lotsMissing: number;
+  imagesUpserted: number;
+  imagesFullSize: number;
+  imagesBadQuality: number;
+  http404Count: number;
+  endpoint404Lots: number;
+  durationMs: number;
+}
+
+export interface PhotoSyncExecutionResult {
+  executed: boolean;
+  summary?: PhotoSyncRunSummary;
 }
 
 export interface PhotoClusterRunWorkerRow {
@@ -54,6 +77,7 @@ export interface PhotoClusterRunWorkerRow {
   imagesFullSize: number;
   imagesBadQuality: number;
   http404Count: number;
+  endpoint404Lots: number;
   startedAt: Date | null;
   finishedAt: Date | null;
   durationMs: number | null;
@@ -72,6 +96,14 @@ export interface PhotoClusterRunSummary {
   totalImagesFullSize: number;
   totalImagesBadQuality: number;
   totalHttp404Count: number;
+  totalEndpoint404Lots: number;
+}
+
+export interface PhotoClusterRunResult extends PhotoClusterRunSummary {
+  clusterRunId: number;
+  mode: "cluster";
+  workerTotal: number;
+  durationMs: number;
 }
 
 export interface LotImagesEndpointPayload {

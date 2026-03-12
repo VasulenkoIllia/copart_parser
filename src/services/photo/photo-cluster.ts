@@ -10,8 +10,10 @@ import {
   completePhotoClusterRunFailure,
   completePhotoClusterRunSuccess,
   createPhotoClusterRun,
+  fetchPhotoClusterRunResult,
   fetchPhotoClusterRunWorkers,
 } from "./photo-repository";
+import { PhotoClusterRunResult } from "./types";
 
 interface WorkerRunResult {
   workerIndex: number;
@@ -218,7 +220,7 @@ function runWorker(
   });
 }
 
-export async function runPhotoCluster(): Promise<void> {
+export async function runPhotoCluster(): Promise<PhotoClusterRunResult> {
   const workerTotal = env.photo.workerTotal;
   if (workerTotal < 1) {
     throw new Error("PHOTO_WORKER_TOTAL must be >= 1 for photo:cluster");
@@ -232,6 +234,8 @@ export async function runPhotoCluster(): Promise<void> {
   const workerEnv = {
     ...workerEnvOverrides,
     PHOTO_CLUSTER_RUN_ID: String(clusterRunId),
+    TELEGRAM_SEND_SUCCESS_SUMMARY: "false",
+    TELEGRAM_SEND_ERROR_ALERTS: "false",
   };
 
   logger.info("Photo cluster started", {
@@ -262,10 +266,11 @@ export async function runPhotoCluster(): Promise<void> {
     }
 
     const workers = await fetchPhotoClusterRunWorkers(clusterRunId);
+    const summary = await fetchPhotoClusterRunResult(clusterRunId, Date.now() - startedAt);
     logger.info("Photo cluster finished", {
       clusterRunId,
       workerTotal,
-      durationMs: Date.now() - startedAt,
+      durationMs: summary.durationMs,
       workerResults: results.map(result => ({
         workerIndex: result.workerIndex,
         exitCode: result.exitCode,
@@ -281,6 +286,7 @@ export async function runPhotoCluster(): Promise<void> {
         lotsMissing: worker.lotsMissing,
         imagesUpserted: worker.imagesUpserted,
         http404Count: worker.http404Count,
+        endpoint404Lots: worker.endpoint404Lots,
         durationMs: worker.durationMs,
       })),
     });
@@ -290,6 +296,7 @@ export async function runPhotoCluster(): Promise<void> {
         `photo:cluster failed: ${failed.length}/${workerTotal} workers exited with non-zero code`
       );
     }
+    return summary;
   } catch (error) {
     await completePhotoClusterRunFailure(
       clusterRunId,

@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import env from "../../config/env";
 import { logger } from "../../lib/logger";
+import { runPhotoCluster } from "../photo/photo-cluster";
 import { runPhotoSync } from "../photo/photo-sync";
 import { runFullPipelineOnce } from "../pipeline/run-once";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
@@ -46,7 +47,9 @@ export async function startScheduler(): Promise<void> {
     cron.schedule(
       photoRetryCron,
       () => {
-        void safeRun("PHOTO_SYNC", runPhotoSync);
+        void safeRun("PHOTO_SYNC", () =>
+          env.photo.workerTotal > 1 ? runPhotoCluster() : runPhotoSync()
+        );
       },
       {
         timezone: env.app.tz,
