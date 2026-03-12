@@ -1,5 +1,6 @@
 import env from "../../config/env";
 import { hashObject } from "../../lib/hash";
+import { normalizeCopartLotImagesUrl } from "../../lib/url-utils";
 import { CsvRecord, IngestCandidate } from "./types";
 
 function pickFirst(record: CsvRecord, keys: string[]): string {
@@ -93,7 +94,7 @@ export function mapCsvRow(record: Record<string, unknown>): IngestCandidate | nu
   return {
     lotNumber,
     yardNumber: parseOptionalInt(yardNumberRaw),
-    imageUrl: imageUrlRaw || null,
+    imageUrl: normalizeCopartLotImagesUrl(imageUrlRaw),
     sourceLastUpdatedAt:
       sourceLastUpdatedAt && !Number.isNaN(sourceLastUpdatedAt.getTime())
         ? sourceLastUpdatedAt

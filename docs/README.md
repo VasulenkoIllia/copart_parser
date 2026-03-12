@@ -44,6 +44,7 @@
 | 2026-03-12 | Fast DB cleanup scripts | Done | Додано `scripts/db-reset.sh` (truncate) і `scripts/db-drop.sh` (drop/recreate) |
 | 2026-03-12 | Extended diagnostics logging | Done | Логи duration/progress/retry/backoff/slow HTTP для кращої діагностики |
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |
+| 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |
 
 ## Що протестовано
 
@@ -75,6 +76,7 @@
 | 2026-03-12 | `make db-reset` | Passed | Швидке очищення runtime-таблиць працює |
 | 2026-03-12 | `make db-drop && make migrate` | Passed | Повний drop/recreate і повторна міграція БД працюють |
 | 2026-03-12 | `make proxy-check` | Passed | Команда керування з контейнера працює коректно |
+| 2026-03-12 | `npm run build` після redirect hardening | Passed | TypeScript компіляція успішна |
 
 ## В роботі
 

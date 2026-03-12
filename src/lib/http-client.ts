@@ -30,6 +30,9 @@ let parsedProxiesCache: ProxyConfig[] | null = null;
 let activeProxiesCache: ProxyConfig[] | null = null;
 let preflightCompleted = false;
 let preflightPromise: Promise<void> | null = null;
+const DEFAULT_MAX_REDIRECTS = 5;
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
 function sanitizeRequestUrl(url: string | undefined): string {
   if (!url) {
@@ -45,6 +48,39 @@ function sanitizeRequestUrl(url: string | undefined): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getHeaderValue(headers: unknown, key: string): string | null {
+  if (!headers || typeof headers !== "object") {
+    return null;
+  }
+
+  const map = headers as Record<string, unknown>;
+  const direct = map[key] ?? map[key.toLowerCase()] ?? map[key.toUpperCase()];
+  const value = Array.isArray(direct) ? direct[0] : direct;
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function resolveRedirectUrl(
+  currentUrl: string | undefined,
+  locationHeader: string | null
+): string | null {
+  if (!locationHeader) {
+    return null;
+  }
+
+  try {
+    if (currentUrl && currentUrl.trim()) {
+      return new URL(locationHeader, currentUrl).toString();
+    }
+    return new URL(locationHeader).toString();
+  } catch {
+    return null;
+  }
 }
 
 function parseProxyUrl(value: string): ProxyConfig {
@@ -175,6 +211,89 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+async function probeProxyWithGet(proxy: ProxyConfig): Promise<number> {
+  const getResponse = await axios.request({
+    method: "GET",
+    url: env.proxy.healthcheckUrl,
+    timeout: env.proxy.preflightTimeoutMs,
+    maxRedirects: 3,
+    responseType: "stream",
+    proxy,
+    validateStatus: () => true,
+    headers: {
+      "User-Agent": DEFAULT_USER_AGENT,
+    },
+  });
+
+  if (
+    getResponse.data &&
+    typeof getResponse.data === "object" &&
+    "destroy" in getResponse.data &&
+    typeof getResponse.data.destroy === "function"
+  ) {
+    getResponse.data.destroy();
+  }
+
+  return getResponse.status;
+}
+
+async function sendRouteRequest<T>(
+  config: AxiosRequestConfig,
+  route: ProxyConfig | null
+): Promise<AxiosResponse<T>> {
+  const configuredMaxRedirects =
+    typeof config.maxRedirects === "number" && Number.isFinite(config.maxRedirects)
+      ? Math.max(0, Math.floor(config.maxRedirects))
+      : DEFAULT_MAX_REDIRECTS;
+
+  let remainingManualRedirects = configuredMaxRedirects;
+  let currentConfig: AxiosRequestConfig = { ...config };
+
+  while (true) {
+    const response = await axios.request<T>({
+      ...currentConfig,
+      maxRedirects: remainingManualRedirects,
+      proxy: route ? route : false,
+      validateStatus: () => true,
+    });
+
+    const locationHeader = getHeaderValue(response.headers, "location");
+    const redirectedTo = resolveRedirectUrl(
+      typeof currentConfig.url === "string" ? currentConfig.url : undefined,
+      locationHeader
+    );
+    const shouldFollowManually =
+      response.status >= 300 &&
+      response.status < 400 &&
+      Boolean(redirectedTo) &&
+      remainingManualRedirects > 0;
+
+    if (!shouldFollowManually || !redirectedTo) {
+      return response;
+    }
+
+    const currentUrl = typeof currentConfig.url === "string" ? currentConfig.url : "";
+    if (redirectedTo === currentUrl) {
+      return response;
+    }
+
+    if (env.diagnostics.httpLogRetryAttempts) {
+      logger.info("HTTP manual redirect follow", {
+        from: sanitizeRequestUrl(currentUrl),
+        to: sanitizeRequestUrl(redirectedTo),
+        status: response.status,
+        remainingRedirects: remainingManualRedirects - 1,
+      });
+    }
+
+    remainingManualRedirects -= 1;
+    currentConfig = {
+      ...currentConfig,
+      url: redirectedTo,
+    };
+  }
+}
+
 async function probeProxy(proxy: ProxyConfig): Promise<ProxyProbeResult> {
   const startedAt = Date.now();
   let status: number | null = null;
@@ -189,38 +308,21 @@ async function probeProxy(proxy: ProxyConfig): Promise<ProxyProbeResult> {
       proxy,
       validateStatus: () => true,
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "User-Agent": DEFAULT_USER_AGENT,
       },
     });
 
     status = headResponse.status;
     if (status === 405) {
-      const getResponse = await axios.request({
-        method: "GET",
-        url: env.proxy.healthcheckUrl,
-        timeout: env.proxy.preflightTimeoutMs,
-        maxRedirects: 3,
-        responseType: "stream",
-        proxy,
-        validateStatus: () => true,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-        },
-      });
-      status = getResponse.status;
-      if (
-        getResponse.data &&
-        typeof getResponse.data === "object" &&
-        "destroy" in getResponse.data &&
-        typeof getResponse.data.destroy === "function"
-      ) {
-        getResponse.data.destroy();
-      }
+      status = await probeProxyWithGet(proxy);
     }
-  } catch (probeError) {
-    error = sanitizeError(probeError);
+  } catch (headError) {
+    const headMessage = sanitizeError(headError);
+    try {
+      status = await probeProxyWithGet(proxy);
+    } catch (getError) {
+      error = `HEAD: ${headMessage}; GET: ${sanitizeError(getError)}`;
+    }
   }
 
   const latencyMs = Date.now() - startedAt;
@@ -429,11 +531,7 @@ export async function httpRequest<T = unknown>(
       const requestAttemptStartedAt = Date.now();
 
       try {
-        const response = await axios.request<T>({
-          ...config,
-          proxy: route ? route : false,
-          validateStatus: () => true,
-        });
+        const response = await sendRouteRequest<T>(config, route);
         const durationMs = Date.now() - requestAttemptStartedAt;
 
         if (isRetryableStatus(response.status)) {

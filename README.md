@@ -242,6 +242,13 @@ npm run proxy:check
 Файл `proxies.txt` додано в `.gitignore`, щоб не комітити приватні проксі.
 Невалідні рядки проксі не падають весь процес: вони пропускаються з WARN-логом `Invalid proxies skipped`.
 
+### Обробка редіректів (важливо)
+
+- `imageurl` для `inventoryv2.copart.io` автоматично нормалізується до `https://` при ingest.
+- Перед запитом у `photo:sync` URL також додатково нормалізується до `https://` (для старих записів у БД).
+- HTTP-клієнт має fallback ручного проходження `3xx + location`, якщо провайдер/проксі віддав редірект без фінального `2xx`.
+- `proxy preflight` тепер робить fallback `HEAD -> GET` навіть коли `HEAD` падає по мережевій помилці (а не тільки при `405`).
+
 Підтримувані формати рядка проксі:
 
 - `http://host:port`
@@ -308,6 +315,33 @@ wait
 4. Зупиняйте ріст паралелізму, якщо ростуть помилки або деградує MySQL.
 
 Орієнтир безпечного масштабування: CPU < 70%, RAM < 70%, без різкого росту HTTP помилок.
+
+### Тест-режим для цілі 1000 лотів/хв
+
+Базовий контрольний прогін (без локальних CSV-файлів, тільки бойовий URL):
+
+```bash
+# 1) Завантажити в core перші 1000 лотів
+docker compose run --rm \
+  -e HTTP_MODE=direct \
+  -e INGEST_MAX_ROWS=1000 \
+  app node dist/index.js ingest:csv
+
+# 2) Прогнати фото на ці 1000 лотів (приклад стартових параметрів)
+docker compose run --rm \
+  -e HTTP_MODE=proxy \
+  -e PROXY_LIST_FILE=./proxies.txt \
+  -e PROXY_PREFLIGHT_TOP_N=20 \
+  -e PHOTO_BATCH_SIZE=1000 \
+  -e PHOTO_FETCH_CONCURRENCY=600 \
+  -e PHOTO_LOG_LOT_RESULTS=false \
+  app node dist/index.js photo:sync
+```
+
+Швидкість дивитись по фінальному логу `Photo sync finished`:
+
+- `lotsPerMin` — цільовий KPI.
+- `http404Count`, `lotsMissing`, `imagesPerMin` — контроль якості джерела/мережі.
 
 ## Стабільність (Roadmap)
 

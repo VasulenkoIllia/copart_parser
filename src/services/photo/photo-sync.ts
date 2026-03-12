@@ -1,6 +1,7 @@
 import env from "../../config/env";
 import { getProxyPoolSnapshot, httpRequest, prepareProxyPool } from "../../lib/http-client";
 import { logger } from "../../lib/logger";
+import { normalizeCopartLotImagesUrl } from "../../lib/url-utils";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { withAppLock } from "../locks/db-lock";
 import { inspectLotImage } from "./image-inspector";
@@ -150,6 +151,7 @@ async function inspectParsedLinks(links: ParsedLotImageLink[]): Promise<CheckedL
 
 async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounters): Promise<void> {
   const lotStartedAt = Date.now();
+  const endpointUrl = normalizeCopartLotImagesUrl(candidate.imageUrl) ?? candidate.imageUrl;
   const logResult = (meta: Record<string, unknown>): void => {
     logLotResult({
       ...meta,
@@ -162,7 +164,7 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
     const response = await httpRequest<unknown>(
       {
         method: "GET",
-        url: candidate.imageUrl,
+        url: endpointUrl,
         timeout: env.photo.httpTimeoutMs,
         maxRedirects: 5,
         headers: {
@@ -179,7 +181,7 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
     );
 
     endpointStatus = response.status;
-    await logPhotoAttempt(candidate.lotNumber, candidate.imageUrl, "lot_images_endpoint", endpointStatus, null, null);
+    await logPhotoAttempt(candidate.lotNumber, endpointUrl, "lot_images_endpoint", endpointStatus, null, null);
 
     if (endpointStatus === 404) {
       const backoff = calculateBackoffMinutes(candidate.photo404Count + 1);
@@ -291,7 +293,7 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
   } catch (error) {
     await logPhotoAttempt(
       candidate.lotNumber,
-      candidate.imageUrl,
+      endpointUrl,
       "lot_images_endpoint",
       endpointStatus,
       "ENDPOINT_EXCEPTION",
