@@ -196,6 +196,12 @@ function runWorker(
     });
 
     child.once("close", (exitCode, signal) => {
+      logger.info("Photo cluster worker exited", {
+        workerIndex,
+        exitCode,
+        signal,
+        durationMs: Date.now() - startedAt,
+      });
       resolve({
         workerIndex,
         exitCode,
