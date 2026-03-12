@@ -41,6 +41,7 @@
 | 2026-03-12 | Proxy list file support | Done | Додано `PROXY_LIST_FILE` + файл `proxies.txt` (1 проксі на рядок, `#` коментар) |
 | 2026-03-12 | Dockerized app runtime | Done | Додано `Dockerfile`, `app` service у `docker-compose`, запуск scheduler у контейнері |
 | 2026-03-12 | Ops command layer | Done | Додано `Makefile` (`up/down/migrate/ingest/photo-sync/proxy-check/db-reset/db-drop/clean-run`) |
+| 2026-03-12 | Photo cluster command | Done | Додано `photo:cluster` для запуску N воркерів у 1 контейнері з shard-by-worker без дублювань |
 | 2026-03-12 | Fast DB cleanup scripts | Done | Додано `scripts/db-reset.sh` (truncate) і `scripts/db-drop.sh` (drop/recreate) |
 | 2026-03-12 | Extended diagnostics logging | Done | Логи duration/progress/retry/backoff/slow HTTP для кращої діагностики |
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |

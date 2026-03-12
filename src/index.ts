@@ -3,6 +3,7 @@ import { runMigrations } from "./db/migrate";
 import { logger } from "./lib/logger";
 import { runCsvIngest } from "./services/ingest/csv-ingest";
 import { runPhotoSync } from "./services/photo/photo-sync";
+import { runPhotoCluster } from "./services/photo/photo-cluster";
 import { startScheduler } from "./services/scheduler/scheduler";
 import { runFullPipelineOnce } from "./services/pipeline/run-once";
 import { runProxyCheck } from "./services/proxy/proxy-check";
@@ -17,6 +18,7 @@ async function run(): Promise<void> {
         "  node dist/index.js db:migrate",
         "  node dist/index.js ingest:csv",
         "  node dist/index.js photo:sync",
+        "  node dist/index.js photo:cluster",
         "  node dist/index.js proxy:check",
         "  node dist/index.js pipeline:run-once",
         "  node dist/index.js scheduler:start",
@@ -35,6 +37,9 @@ async function run(): Promise<void> {
       return;
     case "photo:sync":
       await runPhotoSync();
+      return;
+    case "photo:cluster":
+      await runPhotoCluster();
       return;
     case "proxy:check":
       await runProxyCheck();

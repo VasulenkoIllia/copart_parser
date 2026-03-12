@@ -11,6 +11,7 @@
     "db:drop": "./scripts/db-drop.sh",
     "ingest:csv": "npm run build && node dist/index.js ingest:csv",
     "photo:sync": "npm run build && node dist/index.js photo:sync",
+    "photo:cluster": "npm run build && node dist/index.js photo:cluster",
     "proxy:check": "npm run build && node dist/index.js proxy:check",
     "pipeline:run-once": "npm run build && node dist/index.js pipeline:run-once",
     "scheduler:start": "npm run build && node dist/index.js scheduler:start"

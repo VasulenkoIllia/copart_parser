@@ -297,6 +297,27 @@ done
 wait
 ```
 
+Запуск у **1 контейнері** (керування воркерами всередині застосунку):
+
+```bash
+docker compose run --rm \
+  -e PHOTO_WORKER_TOTAL=4 \
+  -e PHOTO_FETCH_CONCURRENCY=150 \
+  app node dist/index.js photo:cluster
+```
+
+Альтернатива через `make`:
+
+```bash
+PHOTO_WORKER_TOTAL=4 PHOTO_FETCH_CONCURRENCY=150 make photo-cluster
+```
+
+Гарантія без дублювання лотів між воркерами:
+
+- кожен воркер читає свій shard: `MOD(lot_number, PHOTO_WORKER_TOTAL) = PHOTO_WORKER_INDEX`;
+- один і той самий `lot_number` не потрапляє в 2 воркери в одному прогоні;
+- lock також розділений по воркеру: `photo_sync_worker_<index>`.
+
 Важливо: на 1 IP масштабування має межу. Реальний тест (1000 лотів, 12 воркерів, `PHOTO_FETCH_CONCURRENCY=30`) не дав прискорення (`1 воркер: 582.86s`, `12 воркерів: 672s`), бо вузьке місце — мережеві retry/timeout на джерелі.
 Для подальшого прискорення потрібні проксі + rate-limit на проксі.
 

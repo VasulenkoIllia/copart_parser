@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 .PHONY: up down build rebuild ps logs logs-app logs-db scheduler \
-	migrate ingest photo-sync pipeline proxy-check \
+	migrate ingest photo-sync photo-cluster pipeline proxy-check \
 	db-reset db-drop db-shell clean-run
 
 up:
@@ -39,6 +39,9 @@ ingest:
 
 photo-sync:
 	docker compose run --rm app node dist/index.js photo:sync
+
+photo-cluster:
+	docker compose run --rm app node dist/index.js photo:cluster
 
 pipeline:
 	docker compose run --rm app node dist/index.js pipeline:run-once
