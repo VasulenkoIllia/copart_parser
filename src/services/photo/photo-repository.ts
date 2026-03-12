@@ -264,6 +264,7 @@ export async function fetchCachedGoodImages(
       FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
       WHERE
         lot_number = ?
+        AND variant = 'full'
         AND check_status = 'ok'
         AND is_full_size = 1
         AND url_hash IN (${placeholders})
@@ -594,7 +595,7 @@ export function selectImagesForStorage(images: CheckedLotImage[]): CheckedLotIma
     const isGood =
       image.checkStatus === "ok" &&
       image.isFullSize &&
-      image.variant === "hd";
+      image.variant === "full";
     if (!isGood) {
       continue;
     }
@@ -652,7 +653,7 @@ export function evaluateLotStatus(images: CheckedLotImage[]): {
   let badCount = 0;
 
   for (const image of relevant) {
-    const isGood = image.checkStatus === "ok" && image.isFullSize && image.variant === "hd";
+    const isGood = image.checkStatus === "ok" && image.isFullSize && image.variant === "full";
     if (isGood) {
       fullCount += 1;
     } else {

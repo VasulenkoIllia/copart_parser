@@ -97,8 +97,8 @@ function parseEndpointPayload(
         Boolean(link.isEngineSound)
       );
 
-      // Performance mode: process only HD photos.
-      if (variant !== "hd") {
+      // Performance mode: process only FULL photos.
+      if (variant !== "full") {
         continue;
       }
 
