@@ -1,0 +1,15 @@
+.git
+.gitignore
+.idea
+node_modules
+dist
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.*
+!.env.example
+docs
+copart_limit_test.js
+sql-copart-sql.txt
+proxies.txt

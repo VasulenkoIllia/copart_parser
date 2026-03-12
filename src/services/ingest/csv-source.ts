@@ -1,0 +1,109 @@
+import { parse } from "csv-parse";
+import fs from "fs";
+import { Readable } from "stream";
+import env from "../../config/env";
+import { httpRequest } from "../../lib/http-client";
+import { logger } from "../../lib/logger";
+import { CsvRecord } from "./types";
+
+export function buildCsvUrl(): string {
+  const url = new URL(env.csv.sourceUrl);
+  url.searchParams.set("authKey", env.csv.authKey);
+  return url.toString();
+}
+
+export async function downloadCsvStream(): Promise<Readable> {
+  if (env.csv.localFile) {
+    logger.info("Using local CSV file source", { localFile: env.csv.localFile });
+    return fs.createReadStream(env.csv.localFile, {
+      highWaterMark: env.csv.streamHighWaterMark,
+    });
+  }
+
+  const sourceUrl = buildCsvUrl();
+  const response = await httpRequest<Readable>(
+    {
+      method: "GET",
+      url: sourceUrl,
+      responseType: "stream",
+      timeout: env.csv.timeoutMs,
+      maxRedirects: 5,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+      },
+    },
+    {
+      retries: env.csv.retries,
+      retryDelayMs: env.csv.retryDelayMs,
+    }
+  );
+
+  if (response.status < 200 || response.status >= 300 || !response.data) {
+    throw new Error(`CSV download failed with HTTP ${response.status}`);
+  }
+
+  return response.data;
+}
+
+interface SkipRecordMeta {
+  message: string;
+  line: number | null;
+}
+
+function extractErrorLine(err: unknown): number | null {
+  if (!err || typeof err !== "object") {
+    return null;
+  }
+  const candidate = (err as { lines?: unknown }).lines;
+  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null;
+}
+
+export async function* iterateCsvRows(
+  stream: Readable,
+  onSkipRecord?: (meta: SkipRecordMeta) => void
+): AsyncGenerator<CsvRecord> {
+  let skipped = 0;
+  const parser = parse({
+    columns: true,
+    bom: true,
+    skip_empty_lines: true,
+    relax_column_count: true,
+    relax_quotes: env.csv.relaxQuotes,
+    skip_records_with_error: env.csv.skipRecordsWithError,
+    trim: true,
+    on_skip: err => {
+      skipped += 1;
+      const line = extractErrorLine(err);
+      const message = err?.message ?? "unknown_csv_parse_error";
+      onSkipRecord?.({ message, line });
+
+      if (skipped <= env.csv.skipLogLimit) {
+        logger.warn("CSV row skipped due to parse error", {
+          skipped,
+          line,
+          message,
+        });
+      } else if (skipped === env.csv.skipLogLimit + 1) {
+        logger.warn("CSV skip log limit reached", {
+          skipped,
+          skipLogLimit: env.csv.skipLogLimit,
+        });
+      }
+    },
+  });
+
+  stream.pipe(parser);
+
+  for await (const row of parser) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+
+    const normalized: CsvRecord = {};
+    for (const [key, value] of Object.entries(row as Record<string, unknown>)) {
+      normalized[String(key)] = value === null || value === undefined ? "" : String(value);
+    }
+    yield normalized;
+  }
+}
