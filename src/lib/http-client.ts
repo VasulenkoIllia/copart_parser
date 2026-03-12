@@ -2,6 +2,13 @@ import axios, { AxiosRequestConfig, AxiosResponse } from "axios";
 import env from "../config/env";
 import { logger } from "./logger";
 
+const { HttpProxyAgent } = require("http-proxy-agent") as {
+  HttpProxyAgent: new (proxyUrl: string) => unknown;
+};
+const { HttpsProxyAgent } = require("https-proxy-agent") as {
+  HttpsProxyAgent: new (proxyUrl: string) => unknown;
+};
+
 interface RetryOptions {
   retries: number;
   retryDelayMs: number;
@@ -30,6 +37,7 @@ let parsedProxiesCache: ProxyConfig[] | null = null;
 let activeProxiesCache: ProxyConfig[] | null = null;
 let preflightCompleted = false;
 let preflightPromise: Promise<void> | null = null;
+let proxyAgentCache: Map<string, { httpAgent: unknown; httpsAgent: unknown }> = new Map();
 const DEFAULT_MAX_REDIRECTS = 5;
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
@@ -248,6 +256,37 @@ function proxyLabel(proxy: ProxyConfig): string {
   return `${proxy.protocol}://${authPrefix}${proxy.host}:${proxy.port}`;
 }
 
+function buildProxyUrl(proxy: ProxyConfig): string {
+  const authPrefix = proxy.auth
+    ? `${encodeURIComponent(proxy.auth.username)}:${encodeURIComponent(proxy.auth.password)}@`
+    : "";
+  return `${proxy.protocol}://${authPrefix}${proxy.host}:${proxy.port}`;
+}
+
+function getRouteTransport(
+  route: ProxyConfig | null
+): Pick<AxiosRequestConfig, "proxy" | "httpAgent" | "httpsAgent"> {
+  if (!route) {
+    return { proxy: false };
+  }
+
+  const proxyUrl = buildProxyUrl(route);
+  let agents = proxyAgentCache.get(proxyUrl);
+  if (!agents) {
+    agents = {
+      httpAgent: new HttpProxyAgent(proxyUrl),
+      httpsAgent: new HttpsProxyAgent(proxyUrl),
+    };
+    proxyAgentCache.set(proxyUrl, agents);
+  }
+
+  return {
+    proxy: false,
+    httpAgent: agents.httpAgent,
+    httpsAgent: agents.httpsAgent,
+  };
+}
+
 function isHealthyProxyStatus(status: number): boolean {
   // Preflight checks route reachability, not business-level API success.
   // Accept most non-5xx responses and reject explicit proxy-auth responses.
@@ -293,13 +332,14 @@ async function mapWithConcurrency<T, R>(
 }
 
 async function probeProxyWithGet(proxy: ProxyConfig, url: string): Promise<number> {
+  const transport = getRouteTransport(proxy);
   const getResponse = await axios.request({
     method: "GET",
     url,
     timeout: env.proxy.preflightTimeoutMs,
     maxRedirects: 0,
     responseType: "stream",
-    proxy,
+    ...transport,
     validateStatus: () => true,
     headers: {
       "User-Agent": DEFAULT_USER_AGENT,
@@ -323,12 +363,13 @@ async function probeProxyUrl(proxy: ProxyConfig, url: string): Promise<{
   error: string | null;
 }> {
   try {
+    const transport = getRouteTransport(proxy);
     const headResponse = await axios.request({
       method: "HEAD",
       url,
       timeout: env.proxy.preflightTimeoutMs,
       maxRedirects: 0,
-      proxy,
+      ...transport,
       validateStatus: () => true,
       headers: {
         "User-Agent": DEFAULT_USER_AGENT,
@@ -367,6 +408,7 @@ async function sendRouteRequest(
   let cookieJar = new Map<string, string>();
 
   while (true) {
+    const transport = getRouteTransport(route);
     const currentHeaders =
       currentConfig.headers && typeof currentConfig.headers === "object"
         ? { ...(currentConfig.headers as Record<string, unknown>) }
@@ -381,7 +423,7 @@ async function sendRouteRequest(
       // Handle redirects manually so route errors on HTTPS CONNECT do not get swallowed
       // by axios internal redirect flow.
       maxRedirects: 0,
-      proxy: route ? route : false,
+      ...transport,
       validateStatus: () => true,
       headers: currentHeaders as AxiosRequestConfig["headers"],
     });
@@ -522,6 +564,7 @@ export async function prepareProxyPool(reason = "runtime", force = false): Promi
     preflightPromise = null;
     parsedProxiesCache = null;
     activeProxiesCache = null;
+    proxyAgentCache = new Map();
     proxyIndex = 0;
   }
 
