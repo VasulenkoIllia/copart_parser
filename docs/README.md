@@ -36,7 +36,7 @@
 | 2026-03-11 | Worker scaling docs | Done | Зафіксовано підхід: multi-worker + claim + proxy-aware паралелізація |
 | 2026-03-11 | Runtime load tuning docs | Done | Додано практичні правила масштабування по фактичному CPU/RAM навантаженню |
 | 2026-03-11 | Optional updates docs | Done | Додано список необов'язкових покращень (runbook, rollback, SLA/SLO, backup/restore, security) |
-| 2026-03-12 | Multi-worker shard mode | Done | Додано `PHOTO_WORKER_TOTAL/PHOTO_WORKER_INDEX`, шардінг `MOD(lot_number, total)` і lock per worker |
+| 2026-03-12 | Multi-worker shard mode | Done | Додано `PHOTO_WORKER_TOTAL/PHOTO_WORKER_INDEX`, шардінг `MOD(CRC32(CAST(lot_number AS CHAR)), total)` і lock per worker |
 | 2026-03-12 | Proxy preflight + manual check command | Done | Додано preflight перевірку проксі, авто-відбір top-N робочих і команду `proxy:check` |
 | 2026-03-12 | Proxy list file support | Done | Додано `PROXY_LIST_FILE` + файл `proxies.txt` (1 проксі на рядок, `#` коментар) |
 | 2026-03-12 | Dockerized app runtime | Done | Додано `Dockerfile`, `app` service у `docker-compose`, запуск scheduler у контейнері |

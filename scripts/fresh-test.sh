@@ -54,7 +54,7 @@ WHERE deleted_at IS NULL
     OR (photo_status = 'missing' AND (next_photo_retry_at IS NULL OR next_photo_retry_at <= CURRENT_TIMESTAMP(3)))
     OR (photo_status = 'partial' AND (next_photo_retry_at IS NULL OR next_photo_retry_at <= CURRENT_TIMESTAMP(3)))
   );
-SELECT MOD(lot_number, ${PHOTO_WORKER_TOTAL}) AS worker_shard, COUNT(*) AS due_lots
+SELECT MOD(CRC32(CAST(lot_number AS CHAR)), ${PHOTO_WORKER_TOTAL}) AS worker_shard, COUNT(*) AS due_lots
 FROM copart_core.lots
 WHERE deleted_at IS NULL
   AND image_url IS NOT NULL

@@ -46,7 +46,7 @@ export async function runPhotoCluster(): Promise<void> {
     workerTotal,
     fetchConcurrencyPerWorker: env.photo.fetchConcurrency,
     batchSizePerWorker: env.photo.batchSize,
-    sharding: "MOD(lot_number, workerTotal) = workerIndex",
+    sharding: "MOD(CRC32(CAST(lot_number AS CHAR)), workerTotal) = workerIndex",
   });
 
   const startedAt = Date.now();

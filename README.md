@@ -301,7 +301,7 @@ npm run proxy:check
 - `PHOTO_WORKER_TOTAL` — скільки воркерів запускається паралельно.
 - `PHOTO_WORKER_INDEX` — індекс конкретного воркера (`0..PHOTO_WORKER_TOTAL-1`).
 
-Розподіл лотів: `MOD(lot_number, PHOTO_WORKER_TOTAL) = PHOTO_WORKER_INDEX`.
+Розподіл лотів: `MOD(CRC32(CAST(lot_number AS CHAR)), PHOTO_WORKER_TOTAL) = PHOTO_WORKER_INDEX`.
 
 Приклад запуску 12 воркерів:
 
@@ -329,7 +329,7 @@ PHOTO_WORKER_TOTAL=4 PHOTO_FETCH_CONCURRENCY=150 make photo-cluster
 
 Гарантія без дублювання лотів між воркерами:
 
-- кожен воркер читає свій shard: `MOD(lot_number, PHOTO_WORKER_TOTAL) = PHOTO_WORKER_INDEX`;
+- кожен воркер читає свій shard: `MOD(CRC32(CAST(lot_number AS CHAR)), PHOTO_WORKER_TOTAL) = PHOTO_WORKER_INDEX`;
 - один і той самий `lot_number` не потрапляє в 2 воркери в одному прогоні;
 - lock також розділений по воркеру: `photo_sync_worker_<index>`.
 

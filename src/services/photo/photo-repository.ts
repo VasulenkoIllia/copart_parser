@@ -138,7 +138,7 @@ export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandi
       WHERE
         deleted_at IS NULL
         AND image_url IS NOT NULL
-        AND MOD(lot_number, ?) = ?
+        AND MOD(CRC32(CAST(lot_number AS CHAR)), ?) = ?
         AND (
           photo_status = 'unknown'
           OR (
