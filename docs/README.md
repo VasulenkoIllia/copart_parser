@@ -44,6 +44,7 @@
 | 2026-03-12 | Photo cluster command | Done | Додано `photo:cluster` для запуску N воркерів у 1 контейнері з shard-by-worker без дублювань |
 | 2026-03-12 | Fast DB cleanup scripts | Done | Додано `scripts/db-reset.sh` (truncate) і `scripts/db-drop.sh` (drop/recreate) |
 | 2026-03-12 | Reproducible fresh benchmark script | Done | Додано `scripts/fresh-test.sh` + `make fresh-test` (`db-drop -> migrate -> ingest -> photo:cluster -> SQL summary`) |
+| 2026-03-12 | Auto proxy selection for photo cluster | Done | `photo:cluster` може взяти 1 реальний photo URL з БД, прогнати preflight по ньому і передати воркерам тільки top-N проксі |
 | 2026-03-12 | Extended diagnostics logging | Done | Логи duration/progress/retry/backoff/slow HTTP для кращої діагностики |
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |
 | 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |

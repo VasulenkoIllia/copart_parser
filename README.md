@@ -247,6 +247,13 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - `PROXY_PREFLIGHT_MIN_WORKING=5`
 - `PROXY_PREFLIGHT_STRICT=false` (`true` -> падати, якщо робочих менше `MIN_WORKING`)
 
+Автовідбір проксі під фото (рекомендовано для швидкості):
+
+- `PROXY_AUTO_SELECT_FOR_PHOTO=true` — у `photo:cluster` перед стартом воркерів береться 1 реальний URL фото з БД і preflight виконується саме по ньому.
+- `PROXY_AUTO_SELECT_PROBE_LOTS=20` — скільки останніх лотів перевіряти, щоб знайти валідний URL фото для benchmark.
+- Рекомендований розмір робочого пулу: `PROXY_PREFLIGHT_TOP_N=250..350` (зазвичай найкращий баланс швидкості/стабільності).
+- Після автовідбору воркери отримують тільки selected pool і працюють без повторного preflight.
+
 Ручна перевірка пулу:
 
 ```bash

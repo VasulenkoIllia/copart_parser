@@ -77,6 +77,8 @@ interface AppEnv {
     list: string[];
     rotation: string;
     healthcheckUrl: string;
+    autoSelectForPhoto: boolean;
+    autoSelectProbeLots: number;
     failureCooldownSec: number;
     preflightEnabled: boolean;
     preflightTimeoutMs: number;
@@ -281,6 +283,8 @@ const env: AppEnv = {
     list: parseProxyList("PROXY_LIST", "PROXY_LIST_FILE"),
     rotation: optional("PROXY_ROTATION", "strict"),
     healthcheckUrl: optional("PROXY_HEALTHCHECK_URL", "https://www.copart.com/"),
+    autoSelectForPhoto: toBoolean("PROXY_AUTO_SELECT_FOR_PHOTO", false),
+    autoSelectProbeLots: toInt("PROXY_AUTO_SELECT_PROBE_LOTS", 20),
     failureCooldownSec: toInt("PROXY_FAILURE_COOLDOWN_SEC", 300),
     preflightEnabled: toBoolean("PROXY_PREFLIGHT_ENABLED", true),
     preflightTimeoutMs: toInt("PROXY_PREFLIGHT_TIMEOUT_MS", 7_000),
@@ -336,6 +340,10 @@ if (env.proxy.preflightConcurrency < 1) {
 
 if (env.proxy.preflightTopN < 1) {
   throw new Error("PROXY_PREFLIGHT_TOP_N must be >= 1");
+}
+
+if (env.proxy.autoSelectProbeLots < 1) {
+  throw new Error("PROXY_AUTO_SELECT_PROBE_LOTS must be >= 1");
 }
 
 if (env.proxy.preflightMinWorking < 1) {

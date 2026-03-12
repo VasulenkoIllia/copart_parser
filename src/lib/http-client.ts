@@ -37,6 +37,7 @@ let parsedProxiesCache: ProxyConfig[] | null = null;
 let activeProxiesCache: ProxyConfig[] | null = null;
 let preflightCompleted = false;
 let preflightPromise: Promise<void> | null = null;
+let preflightTargetUrl: string | null = null;
 let proxyAgentCache: Map<string, { httpAgent: unknown; httpsAgent: unknown }> = new Map();
 const DEFAULT_MAX_REDIRECTS = 5;
 const DEFAULT_USER_AGENT =
@@ -471,14 +472,14 @@ async function sendRouteRequest(
   }
 }
 
-async function probeProxy(proxy: ProxyConfig): Promise<ProxyProbeResult> {
+async function probeProxy(proxy: ProxyConfig, healthcheckUrl: string): Promise<ProxyProbeResult> {
   const startedAt = Date.now();
-  let { status, error } = await probeProxyUrl(proxy, env.proxy.healthcheckUrl);
+  let { status, error } = await probeProxyUrl(proxy, healthcheckUrl);
 
-  const fallbackHttpUrl = buildInventoryProtocolVariant(env.proxy.healthcheckUrl, "http");
+  const fallbackHttpUrl = buildInventoryProtocolVariant(healthcheckUrl, "http");
   const shouldTryHttpFallback =
     fallbackHttpUrl &&
-    fallbackHttpUrl !== env.proxy.healthcheckUrl &&
+    fallbackHttpUrl !== healthcheckUrl &&
     (status === null || !isHealthyProxyStatus(status));
   if (shouldTryHttpFallback) {
     const fallback = await probeProxyUrl(proxy, fallbackHttpUrl);
@@ -502,7 +503,7 @@ async function probeProxy(proxy: ProxyConfig): Promise<ProxyProbeResult> {
   };
 }
 
-async function runProxyPreflight(reason: string): Promise<void> {
+async function runProxyPreflight(reason: string, healthcheckUrl: string): Promise<void> {
   const configured = getParsedProxyList();
 
   if (configured.length === 0) {
@@ -517,7 +518,7 @@ async function runProxyPreflight(reason: string): Promise<void> {
   const results = await mapWithConcurrency(
     configured,
     env.proxy.preflightConcurrency,
-    async proxy => probeProxy(proxy)
+    async proxy => probeProxy(proxy, healthcheckUrl)
   );
   const healthy = results.filter(result => result.ok).sort((a, b) => a.latencyMs - b.latencyMs);
   const topN = Math.min(env.proxy.preflightTopN, healthy.length);
@@ -540,10 +541,12 @@ async function runProxyPreflight(reason: string): Promise<void> {
 
   activeProxiesCache = selected.map(item => item.proxy);
   preflightCompleted = true;
+  preflightTargetUrl = healthcheckUrl;
 
   logger.info("Proxy preflight completed", {
     reason,
     mode: env.proxy.mode,
+    healthcheckUrl: sanitizeRequestUrl(healthcheckUrl),
     configured: configured.length,
     healthy: healthy.length,
     selected: activeProxiesCache.length,
@@ -559,11 +562,24 @@ async function runProxyPreflight(reason: string): Promise<void> {
 }
 
 export async function prepareProxyPool(reason = "runtime", force = false): Promise<void> {
+  const healthcheckUrl = (env.proxy.healthcheckUrl || "").trim();
+  return prepareProxyPoolWithHealthcheck(reason, force, healthcheckUrl);
+}
+
+export async function prepareProxyPoolWithHealthcheck(
+  reason = "runtime",
+  force = false,
+  healthcheckUrlOverride?: string
+): Promise<void> {
+  const healthcheckUrl = (healthcheckUrlOverride || env.proxy.healthcheckUrl || "").trim();
+  const effectiveHealthcheckUrl = healthcheckUrl || env.proxy.healthcheckUrl;
+
   if (force) {
     preflightCompleted = false;
     preflightPromise = null;
     parsedProxiesCache = null;
     activeProxiesCache = null;
+    preflightTargetUrl = null;
     proxyAgentCache = new Map();
     proxyIndex = 0;
   }
@@ -571,6 +587,7 @@ export async function prepareProxyPool(reason = "runtime", force = false): Promi
   if (env.proxy.mode === "direct") {
     preflightCompleted = true;
     activeProxiesCache = [];
+    preflightTargetUrl = null;
     return;
   }
 
@@ -581,15 +598,18 @@ export async function prepareProxyPool(reason = "runtime", force = false): Promi
     }
     preflightCompleted = true;
     activeProxiesCache = [];
+    preflightTargetUrl = null;
     return;
   }
 
   if (!env.proxy.preflightEnabled) {
     activeProxiesCache = configured.slice(0, Math.min(env.proxy.preflightTopN, configured.length));
     preflightCompleted = true;
+    preflightTargetUrl = effectiveHealthcheckUrl;
     logger.info("Proxy preflight disabled, selected proxies without checks", {
       reason,
       mode: env.proxy.mode,
+      healthcheckUrl: sanitizeRequestUrl(effectiveHealthcheckUrl),
       configured: configured.length,
       selected: activeProxiesCache.length,
       topN: env.proxy.preflightTopN,
@@ -598,12 +618,12 @@ export async function prepareProxyPool(reason = "runtime", force = false): Promi
     return;
   }
 
-  if (preflightCompleted) {
+  if (preflightCompleted && preflightTargetUrl === effectiveHealthcheckUrl) {
     return;
   }
 
   if (!preflightPromise) {
-    preflightPromise = runProxyPreflight(reason).finally(() => {
+    preflightPromise = runProxyPreflight(reason, effectiveHealthcheckUrl).finally(() => {
       preflightPromise = null;
     });
   }
@@ -628,6 +648,10 @@ export function getProxyPoolSnapshot(): {
     preflightEnabled: env.proxy.preflightEnabled,
     preflightCompleted,
   };
+}
+
+export function getActiveProxyUrls(): string[] {
+  return getActiveProxyList().map(proxy => buildProxyUrl(proxy));
 }
 
 function getActiveProxyList(): ProxyConfig[] {
