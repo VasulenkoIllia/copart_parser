@@ -6,6 +6,69 @@ import { runPhotoSync } from "../photo/photo-sync";
 import { runFullPipelineOnce } from "../pipeline/run-once";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function parseCronNumberList(value: string): number[] | null {
+  if (!value.trim()) {
+    return null;
+  }
+
+  const parts = value.split(",").map(item => item.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const numbers = parts.map(part => Number.parseInt(part, 10));
+  if (numbers.some(number => !Number.isFinite(number))) {
+    return null;
+  }
+
+  return numbers;
+}
+
+function describeCron(cronExpr: string): string {
+  const trimmed = cronExpr.trim();
+  if (!trimmed) {
+    return "вимкнено";
+  }
+
+  const parts = trimmed.split(/\s+/);
+  if (parts.length !== 5) {
+    return trimmed;
+  }
+
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+
+  if (dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+    if (/^\d+$/.test(minute)) {
+      const minuteValue = Number.parseInt(minute, 10);
+
+      if (hour === "*") {
+        return `щогодини о ${pad2(minuteValue)} хв`;
+      }
+
+      if (/^\*\/\d+$/.test(hour)) {
+        const interval = Number.parseInt(hour.slice(2), 10);
+        return `кожні ${interval} год о ${pad2(minuteValue)}:${pad2(0)}`.replace(":00", `:${pad2(minuteValue)}`);
+      }
+
+      const hours = parseCronNumberList(hour);
+      if (hours && hours.length > 0) {
+        return `щодня о ${hours.map(current => `${pad2(current)}:${pad2(minuteValue)}`).join(", ")}`;
+      }
+    }
+
+    if (/^\*\/\d+$/.test(minute) && hour === "*") {
+      const interval = Number.parseInt(minute.slice(2), 10);
+      return `щогодини кожні ${interval} хв`;
+    }
+  }
+
+  return trimmed;
+}
+
 async function safeRun(name: string, action: () => Promise<unknown>): Promise<void> {
   const startedAt = Date.now();
   logger.info(`${name} job started`);
@@ -64,10 +127,14 @@ export async function startScheduler(): Promise<void> {
   if (env.telegram.sendSuccessSummary) {
     await sendTelegramMessage(
       [
-        "[SCHEDULER] started",
-        `ingest_cron=${env.schedule.ingestCron}`,
-        `photo_retry_cron=${photoRetryCron || "disabled"}`,
-        `timezone=${env.app.tz}`,
+        "Планувальник запущено",
+        "",
+        `Оновлення CSV: ${describeCron(env.schedule.ingestCron)}`,
+        `Cron CSV: ${env.schedule.ingestCron}`,
+        `Окремий photo retry: ${describeCron(photoRetryCron)}`,
+        ...(photoRetryCron ? [`Cron photo retry: ${photoRetryCron}`] : []),
+        `Часова зона: ${env.app.tz}`,
+        `Автостарт після рестарту: ${env.schedule.runOnStart ? "так" : "ні"}`,
       ].join("\n")
     );
   }

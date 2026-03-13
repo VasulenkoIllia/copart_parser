@@ -8,8 +8,27 @@ import { runPhotoCluster } from "../photo/photo-cluster";
 import { CsvIngestRunSummary } from "../ingest/types";
 import { PhotoClusterRunResult, PhotoSyncRunSummary } from "../photo/types";
 
-function formatDurationSeconds(durationMs: number): string {
-  return (durationMs / 1000).toFixed(2);
+function formatCount(value: number): string {
+  return new Intl.NumberFormat("uk-UA").format(value);
+}
+
+function formatPercent(part: number, total: number): string {
+  if (total <= 0) {
+    return "0.0%";
+  }
+  return `${((part / total) * 100).toFixed(1)}%`;
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes === 0) {
+    return `${seconds} с`;
+  }
+
+  return `${minutes} хв ${seconds} с`;
 }
 
 function buildPipelineSuccessMessage(
@@ -17,38 +36,53 @@ function buildPipelineSuccessMessage(
   photo: PhotoSyncRunSummary | PhotoClusterRunResult,
   totalDurationMs: number
 ): string {
+  const photoProcessed = photo.mode === "cluster" ? photo.totalLotsProcessed : photo.lotsProcessed;
+  const photoOk = photo.mode === "cluster" ? photo.totalLotsOk : photo.lotsOk;
+  const photoMissing = photo.mode === "cluster" ? photo.totalLotsMissing : photo.lotsMissing;
+  const endpoint404Lots =
+    photo.mode === "cluster" ? photo.totalEndpoint404Lots : photo.endpoint404Lots;
+  const http404Total = photo.mode === "cluster" ? photo.totalHttp404Count : photo.http404Count;
+  const imagesUpserted = photo.mode === "cluster" ? photo.totalImagesUpserted : photo.imagesUpserted;
+
   const lines = [
-    "[PIPELINE] success",
-    `csv_lots=${ingest.rowsValid}`,
-    `new_lots=${ingest.rowsInserted}`,
-    `updated_lots=${ingest.rowsUpdated}`,
-    `unchanged_lots=${ingest.rowsUnchanged}`,
-    `invalid_rows=${ingest.rowsInvalid}`,
-    `pruned_lots=${ingest.prunedLots}`,
-    `hydrated_lots_from_media=${ingest.hydratedLotsFromMedia}`,
-    `photo_mode=${photo.mode}`,
-    `photo_processed=${photo.mode === "cluster" ? photo.totalLotsProcessed : photo.lotsProcessed}`,
-    `photo_ok=${photo.mode === "cluster" ? photo.totalLotsOk : photo.lotsOk}`,
-    `photo_missing=${photo.mode === "cluster" ? photo.totalLotsMissing : photo.lotsMissing}`,
-    `endpoint_404_lots=${photo.mode === "cluster" ? photo.totalEndpoint404Lots : photo.endpoint404Lots}`,
-    `http_404_total=${photo.mode === "cluster" ? photo.totalHttp404Count : photo.http404Count}`,
-    `images_upserted=${photo.mode === "cluster" ? photo.totalImagesUpserted : photo.imagesUpserted}`,
+    "Оновлення Copart завершено",
+    "",
+    "CSV",
+    `Лотів у CSV: ${formatCount(ingest.rowsValid)}`,
+    `Нових лотів: ${formatCount(ingest.rowsInserted)}`,
+    `Оновлених лотів: ${formatCount(ingest.rowsUpdated)}`,
+    `Без змін: ${formatCount(ingest.rowsUnchanged)}`,
+    `Некоректних рядків: ${formatCount(ingest.rowsInvalid)}`,
+    `Видалено зі snapshot: ${formatCount(ingest.prunedLots)}`,
+    `Одразу закрито з media: ${formatCount(ingest.hydratedLotsFromMedia)}`,
+    "",
+    "Фото",
+    `Опрацьовано лотів: ${formatCount(photoProcessed)}`,
+    `З валідними фото: ${formatCount(photoOk)} (${formatPercent(photoOk, photoProcessed)})`,
+    `Без валідних фото: ${formatCount(photoMissing)} (${formatPercent(photoMissing, photoProcessed)})`,
+    `Лотів з endpoint 404: ${formatCount(endpoint404Lots)}`,
+    `Усього HTTP 404: ${formatCount(http404Total)}`,
+    `Збережено HD фото: ${formatCount(imagesUpserted)}`,
   ];
 
   if (photo.mode === "cluster") {
     lines.push(
-      `photo_workers=${photo.workerTotal}`,
-      `workers_succeeded=${photo.workersSucceeded}`,
-      `workers_failed=${photo.workersFailed}`
+      "",
+      "Кластер",
+      `Воркерів: ${formatCount(photo.workerTotal)}`,
+      `Успішних: ${formatCount(photo.workersSucceeded)}`,
+      `З помилками: ${formatCount(photo.workersFailed)}`
     );
   } else {
-    lines.push(`photo_worker=${photo.workerIndex}/${photo.workerTotal}`);
+    lines.push("", "Воркер", `${photo.workerIndex + 1} з ${photo.workerTotal}`);
   }
 
   lines.push(
-    `ingest_sec=${formatDurationSeconds(ingest.durationMs)}`,
-    `photo_sec=${formatDurationSeconds(photo.durationMs)}`,
-    `total_sec=${formatDurationSeconds(totalDurationMs)}`
+    "",
+    "Час виконання",
+    `CSV: ${formatDuration(ingest.durationMs)}`,
+    `Фото: ${formatDuration(photo.durationMs)}`,
+    `Разом: ${formatDuration(totalDurationMs)}`
   );
 
   return lines.join("\n");
