@@ -23,6 +23,7 @@ interface AppEnv {
     sourceUrl: string;
     authKey: string;
     localFile: string;
+    cacheBust: boolean;
     timeoutMs: number;
     retries: number;
     retryDelayMs: number;
@@ -228,6 +229,7 @@ const env: AppEnv = {
     sourceUrl: optional("CSV_SOURCE_URL", "https://allzap.site/copart/salesdata.csv"),
     authKey: optional("CSV_AUTH_KEY", "change_me"),
     localFile: optional("CSV_LOCAL_FILE", ""),
+    cacheBust: toBoolean("CSV_CACHE_BUST", true),
     timeoutMs: toInt("CSV_HTTP_TIMEOUT_MS", 60000),
     retries: toInt("CSV_DOWNLOAD_RETRIES", 5),
     retryDelayMs: toInt("CSV_DOWNLOAD_RETRY_DELAY_MS", 5000),

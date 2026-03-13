@@ -55,6 +55,7 @@
 | 2026-03-12 | Extended diagnostics logging | Done | Логи duration/progress/retry/backoff/slow HTTP для кращої діагностики |
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |
 | 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |
+| 2026-03-13 | CSV source cache-bust | Done | Remote CSV запитується з `_ts` query-param + `no-cache` headers; у логах видно `cf-cache-status/etag/last-modified` |
 
 ## Що протестовано
 
@@ -92,6 +93,7 @@
 | 2026-03-13 | `CSV_LOCAL_FILE=/tmp/copart_small_b.csv INGEST_MAX_ROWS=0 npm run ingest:csv` | Passed | Другий snapshot prune прибрав відсутній лот тільки з core; media лишилась без cleanup |
 | 2026-03-13 | Isolated verify DB scenario (`copart_core_verify` / `copart_media_verify`) | Passed | Після seed одного media-лота кандидатом лишився тільки лот без фото; після нового CSV core став snapshot, media зберегла старий лот |
 | 2026-03-13 | Server benchmark: `fresh-test` (`12 workers`, `150 concurrency`, `top-300 proxies`) | Passed | `photo_cluster_runs`: `1000 lots / 11.63s`, `lots_ok=697`, `lots_missing=303`, `images_upserted=7754`; worker durations `9.30s..11.31s`, всі `12/12` воркерів `success` |
+| 2026-03-13 | HEAD до remote CSV: base vs cache-bust URL | Observed | Базовий URL повернув `cf-cache-status=HIT`, cache-bust URL (`_ts=...`) повернув `MISS`; обидва `200`, отже stale CDN-копія була реально можлива |
 
 ## В роботі
 

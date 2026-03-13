@@ -12,6 +12,14 @@ export function buildCsvUrl(): string {
   return url.toString();
 }
 
+function buildCsvRequestUrl(): string {
+  const url = new URL(buildCsvUrl());
+  if (env.csv.cacheBust) {
+    url.searchParams.set("_ts", String(Date.now()));
+  }
+  return url.toString();
+}
+
 export async function downloadCsvStream(): Promise<Readable> {
   if (env.csv.localFile) {
     logger.info("Using local CSV file source", { localFile: env.csv.localFile });
@@ -20,7 +28,7 @@ export async function downloadCsvStream(): Promise<Readable> {
     });
   }
 
-  const sourceUrl = buildCsvUrl();
+  const sourceUrl = buildCsvRequestUrl();
   const response = await httpRequest<Readable>(
     {
       method: "GET",
@@ -31,6 +39,9 @@ export async function downloadCsvStream(): Promise<Readable> {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache",
+        Expires: "0",
       },
     },
     {
@@ -42,6 +53,16 @@ export async function downloadCsvStream(): Promise<Readable> {
   if (response.status < 200 || response.status >= 300 || !response.data) {
     throw new Error(`CSV download failed with HTTP ${response.status}`);
   }
+
+  logger.info("CSV download response", {
+    cacheBust: env.csv.cacheBust,
+    cacheControl: response.headers["cache-control"] ?? null,
+    cfCacheStatus: response.headers["cf-cache-status"] ?? null,
+    contentLength: response.headers["content-length"] ?? null,
+    etag: response.headers.etag ?? null,
+    lastModified: response.headers["last-modified"] ?? null,
+    status: response.status,
+  });
 
   return response.data;
 }
