@@ -38,6 +38,7 @@ function buildPipelineSuccessMessage(
   photo: PhotoSyncRunSummary | PhotoClusterRunResult,
   totalDurationMs: number
 ): string {
+  const configuredParallelRequests = env.photo.fetchConcurrency * env.photo.workerTotal;
   const photoProcessed = photo.mode === "cluster" ? photo.totalLotsProcessed : photo.lotsProcessed;
   const photoLinksProcessed =
     photo.mode === "cluster" ? photo.totalPhotoLinksProcessed : photo.photoLinksProcessed;
@@ -48,6 +49,7 @@ function buildPipelineSuccessMessage(
   const http404Total = photo.mode === "cluster" ? photo.totalHttp404Count : photo.http404Count;
   const imagesUpserted = photo.mode === "cluster" ? photo.totalImagesUpserted : photo.imagesUpserted;
   const invalidRowsCsvAttached = Boolean(ingest.invalidRowsReport);
+  const invalidRowsDebugCsvAttached = Boolean(ingest.invalidRowsDebugReport);
   const http404CsvAttached = Boolean(photo.http404Report);
 
   const lines = [
@@ -72,11 +74,12 @@ function buildPipelineSuccessMessage(
     `Збережено HD фото: ${formatCount(imagesUpserted)}`,
   ];
 
-  if (invalidRowsCsvAttached || http404CsvAttached) {
+  if (invalidRowsCsvAttached || invalidRowsDebugCsvAttached || http404CsvAttached) {
     lines.push(
       "",
       "Файли",
       `CSV битих рядків: ${invalidRowsCsvAttached ? "додано" : "немає"}`,
+      `CSV битих рядків debug: ${invalidRowsDebugCsvAttached ? "додано" : "немає"}`,
       `CSV HTTP 404: ${http404CsvAttached ? "додано" : "немає"}`
     );
   }
@@ -86,11 +89,19 @@ function buildPipelineSuccessMessage(
       "",
       "Кластер",
       `Воркерів: ${formatCount(photo.workerTotal)}`,
+      `Fetch concurrency/воркер: ${formatCount(env.photo.fetchConcurrency)}`,
+      `Теор. max паралельних HTTP-запитів: ${formatCount(configuredParallelRequests)}`,
       `Успішних: ${formatCount(photo.workersSucceeded)}`,
       `З помилками: ${formatCount(photo.workersFailed)}`
     );
   } else {
-    lines.push("", "Воркер", `${photo.workerIndex + 1} з ${photo.workerTotal}`);
+    lines.push(
+      "",
+      "Воркер",
+      `${photo.workerIndex + 1} з ${photo.workerTotal}`,
+      `Fetch concurrency: ${formatCount(env.photo.fetchConcurrency)}`,
+      `Теор. max паралельних HTTP-запитів: ${formatCount(configuredParallelRequests)}`
+    );
   }
 
   lines.push(
@@ -120,6 +131,9 @@ async function executeFullPipelineOnce(): Promise<void> {
     }
     if (ingestResult.summary.invalidRowsReport) {
       reportFiles.push(ingestResult.summary.invalidRowsReport);
+    }
+    if (ingestResult.summary.invalidRowsDebugReport) {
+      reportFiles.push(ingestResult.summary.invalidRowsDebugReport);
     }
 
     const photoResult =

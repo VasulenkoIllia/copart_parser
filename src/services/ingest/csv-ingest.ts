@@ -15,10 +15,13 @@ import { withAppLock } from "../locks/db-lock";
 import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { cleanupReportFiles } from "../reports/csv-report";
 import {
+  aggregateInvalidRows,
   InvalidCsvRowReportEntry,
+  tryCreateInvalidRowsDebugReport,
   tryCreateInvalidRowsReport,
 } from "../reports/run-artifacts";
 import { GeneratedReportFile } from "../reports/types";
+import { tryStoreInvalidCsvRows } from "./invalid-row-repository";
 
 function getSourceDescriptor(): string {
   if (env.csv.localFile) {
@@ -86,6 +89,7 @@ async function executeCsvIngest(
   let prunedLots = 0;
   let hydratedLots = 0;
   let invalidRowsReport: GeneratedReportFile | null = null;
+  let invalidRowsDebugReport: GeneratedReportFile | null = null;
 
   logger.info("CSV ingest started", {
     sourceUrl: toLoggableSource(sourceUrl),
@@ -180,8 +184,11 @@ async function executeCsvIngest(
 
     const shouldBuildInvalidRowsReport =
       options.buildInvalidRowsReport ?? ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary);
+    const aggregatedInvalidRows = aggregateInvalidRows(invalidRows);
+    await tryStoreInvalidCsvRows(runId, aggregatedInvalidRows);
     if (shouldBuildInvalidRowsReport) {
       invalidRowsReport = await tryCreateInvalidRowsReport(invalidRows);
+      invalidRowsDebugReport = await tryCreateInvalidRowsDebugReport(invalidRows);
     }
 
     const durationMs = Date.now() - startedAt;
@@ -216,6 +223,7 @@ async function executeCsvIngest(
       maxRows: maxRows > 0 ? maxRows : null,
       maxRowsReached,
       invalidRowsReport,
+      invalidRowsDebugReport,
     };
 
     if ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary) {
@@ -231,20 +239,32 @@ async function executeCsvIngest(
           `hydrated_lots_from_media=${hydratedLots}`,
           `pruned_lots=${prunedLots}`,
           `invalid_rows_csv=${invalidRowsReport ? invalidRowsReport.filename : "none"}`,
+          `invalid_rows_debug_csv=${invalidRowsDebugReport ? invalidRowsDebugReport.filename : "none"}`,
         ].join("\n")
       );
       await sendTelegramDocuments(
-        invalidRowsReport
-          ? [
-              {
-                path: invalidRowsReport.path,
-                filename: invalidRowsReport.filename,
-                caption: `Биті рядки CSV (${invalidRowsReport.rowCount})`,
-              },
-            ]
-          : []
+        [
+          ...(invalidRowsReport
+            ? [
+                {
+                  path: invalidRowsReport.path,
+                  filename: invalidRowsReport.filename,
+                  caption: `Биті рядки CSV (${invalidRowsReport.rowCount})`,
+                },
+              ]
+            : []),
+          ...(invalidRowsDebugReport
+            ? [
+                {
+                  path: invalidRowsDebugReport.path,
+                  filename: invalidRowsDebugReport.filename,
+                  caption: `Биті рядки CSV debug raw (${invalidRowsDebugReport.rowCount})`,
+                },
+              ]
+            : []),
+        ]
       );
-      await cleanupReportFiles([invalidRowsReport]);
+      await cleanupReportFiles([invalidRowsReport, invalidRowsDebugReport]);
     }
 
     return summary;

@@ -429,6 +429,7 @@ async function executePhotoSync(
           `lots_scanned=${counters.lotsScanned}`,
           `lots_processed=${counters.lotsProcessed}`,
           `photo_links_processed=${counters.photoLinksProcessed}`,
+          `configured_parallel_requests=${env.photo.fetchConcurrency * env.photo.workerTotal}`,
           `lots_ok=${counters.lotsOk}`,
           `lots_missing=${counters.lotsMissing}`,
           `images_upserted=${counters.imagesUpserted}`,

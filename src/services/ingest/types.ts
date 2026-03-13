@@ -33,6 +33,7 @@ export interface CsvIngestRunSummary {
   maxRows: number | null;
   maxRowsReached: boolean;
   invalidRowsReport: GeneratedReportFile | null;
+  invalidRowsDebugReport: GeneratedReportFile | null;
 }
 
 export interface CsvIngestExecutionResult {

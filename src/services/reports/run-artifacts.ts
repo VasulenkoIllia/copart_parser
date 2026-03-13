@@ -14,7 +14,7 @@ export interface InvalidCsvRowReportEntry {
   recordJson: string;
 }
 
-interface AggregatedInvalidCsvRowReportEntry {
+export interface AggregatedInvalidCsvRowReportEntry {
   source: string;
   line: number | null;
   reason: string;
@@ -41,7 +41,7 @@ function pickMoreInformativePreview(current: string, candidate: string): string 
   return candidate.length > current.length ? candidate : current;
 }
 
-function aggregateInvalidRows(
+export function aggregateInvalidRows(
   entries: InvalidCsvRowReportEntry[]
 ): AggregatedInvalidCsvRowReportEntry[] {
   const aggregated = new Map<string, AggregatedInvalidCsvRowReportEntry>();
@@ -91,6 +91,24 @@ export async function createInvalidRowsReport(
       occurrences: entry.occurrences,
       sample_raw: truncatePreview(entry.sampleRaw, 800),
       sample_record_json: truncatePreview(entry.sampleRecordJson, 800),
+    })),
+  });
+}
+
+export async function createInvalidRowsDebugReport(
+  entries: InvalidCsvRowReportEntry[]
+): Promise<GeneratedReportFile | null> {
+  const aggregatedEntries = aggregateInvalidRows(entries);
+  return writeCsvReport({
+    prefix: "copart_invalid_rows_debug",
+    headers: ["source", "line", "reason", "occurrences", "full_raw", "full_record_json"],
+    rows: aggregatedEntries.map(entry => ({
+      source: entry.source,
+      line: entry.line ?? "",
+      reason: entry.reason,
+      occurrences: entry.occurrences,
+      full_raw: entry.sampleRaw,
+      full_record_json: entry.sampleRecordJson,
     })),
   });
 }
@@ -156,6 +174,20 @@ export async function tryCreateInvalidRowsReport(
     return await createInvalidRowsReport(entries);
   } catch (error) {
     logger.warn("Failed to create invalid rows CSV report", {
+      message: error instanceof Error ? error.message : String(error),
+      rowCount: entries.length,
+    });
+    return null;
+  }
+}
+
+export async function tryCreateInvalidRowsDebugReport(
+  entries: InvalidCsvRowReportEntry[]
+): Promise<GeneratedReportFile | null> {
+  try {
+    return await createInvalidRowsDebugReport(entries);
+  } catch (error) {
+    logger.warn("Failed to create invalid rows debug CSV report", {
       message: error instanceof Error ? error.message : String(error),
       rowCount: entries.length,
     });
