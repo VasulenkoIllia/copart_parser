@@ -187,27 +187,32 @@ export async function upsertLotsBatch(
       ON DUPLICATE KEY UPDATE
         yard_number = VALUES(yard_number),
         photo_status = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
+          OR photo_status = 'missing',
           'unknown',
           photo_status
         ),
         photo_404_count = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
+          OR photo_status = 'missing',
           0,
           photo_404_count
         ),
         photo_404_since = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
+          OR photo_status = 'missing',
           NULL,
           photo_404_since
         ),
         next_photo_retry_at = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
+          OR photo_status = 'missing',
           NULL,
           next_photo_retry_at
         ),
         last_photo_check_at = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
+          OR photo_status = 'missing',
           NULL,
           last_photo_check_at
         ),

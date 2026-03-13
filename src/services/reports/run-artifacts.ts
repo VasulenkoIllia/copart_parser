@@ -14,18 +14,83 @@ export interface InvalidCsvRowReportEntry {
   recordJson: string;
 }
 
+interface AggregatedInvalidCsvRowReportEntry {
+  source: string;
+  line: number | null;
+  reason: string;
+  occurrences: number;
+  sampleRaw: string;
+  sampleRecordJson: string;
+}
+
+function truncatePreview(value: string, limit: number): string {
+  const normalized = value.replace(/\r?\n/g, "\\n").trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 3)}...`;
+}
+
+function pickMoreInformativePreview(current: string, candidate: string): string {
+  if (!candidate.trim()) {
+    return current;
+  }
+  if (!current.trim()) {
+    return candidate;
+  }
+  return candidate.length > current.length ? candidate : current;
+}
+
+function aggregateInvalidRows(
+  entries: InvalidCsvRowReportEntry[]
+): AggregatedInvalidCsvRowReportEntry[] {
+  const aggregated = new Map<string, AggregatedInvalidCsvRowReportEntry>();
+
+  for (const entry of entries) {
+    const key = `${entry.source}|${entry.line ?? ""}|${entry.reason}`;
+    const existing = aggregated.get(key);
+    if (!existing) {
+      aggregated.set(key, {
+        source: entry.source,
+        line: entry.line,
+        reason: entry.reason,
+        occurrences: 1,
+        sampleRaw: entry.raw,
+        sampleRecordJson: entry.recordJson,
+      });
+      continue;
+    }
+
+    existing.occurrences += 1;
+    existing.sampleRaw = pickMoreInformativePreview(existing.sampleRaw, entry.raw);
+    existing.sampleRecordJson = pickMoreInformativePreview(existing.sampleRecordJson, entry.recordJson);
+  }
+
+  return Array.from(aggregated.values()).sort((left, right) => {
+    if (right.occurrences !== left.occurrences) {
+      return right.occurrences - left.occurrences;
+    }
+    if ((left.line ?? 0) !== (right.line ?? 0)) {
+      return (left.line ?? 0) - (right.line ?? 0);
+    }
+    return left.reason.localeCompare(right.reason);
+  });
+}
+
 export async function createInvalidRowsReport(
   entries: InvalidCsvRowReportEntry[]
 ): Promise<GeneratedReportFile | null> {
+  const aggregatedEntries = aggregateInvalidRows(entries);
   return writeCsvReport({
     prefix: "copart_invalid_rows",
-    headers: ["source", "line", "reason", "raw", "record_json"],
-    rows: entries.map(entry => ({
+    headers: ["source", "line", "reason", "occurrences", "sample_raw", "sample_record_json"],
+    rows: aggregatedEntries.map(entry => ({
       source: entry.source,
       line: entry.line ?? "",
       reason: entry.reason,
-      raw: entry.raw,
-      record_json: entry.recordJson,
+      occurrences: entry.occurrences,
+      sample_raw: truncatePreview(entry.sampleRaw, 800),
+      sample_record_json: truncatePreview(entry.sampleRecordJson, 800),
     })),
   });
 }
