@@ -1,3 +1,5 @@
+import { GeneratedReportFile } from "../reports/types";
+
 export type CsvRecord = Record<string, string>;
 
 export interface IngestCandidate {
@@ -30,6 +32,7 @@ export interface CsvIngestRunSummary {
   durationMs: number;
   maxRows: number | null;
   maxRowsReached: boolean;
+  invalidRowsReport: GeneratedReportFile | null;
 }
 
 export interface CsvIngestExecutionResult {

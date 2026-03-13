@@ -43,6 +43,7 @@ interface ClusterSummaryRow extends RowDataPacket {
   workers_failed: number | null;
   total_lots_scanned: number | null;
   total_lots_processed: number | null;
+  total_photo_links_processed: number | null;
   total_lots_ok: number | null;
   total_lots_missing: number | null;
   total_images_upserted: number | null;
@@ -59,6 +60,7 @@ interface ClusterWorkerRow extends RowDataPacket {
   status: "running" | "success" | "failed";
   lots_scanned: number;
   lots_processed: number;
+  photo_links_processed: number | null;
   lots_ok: number;
   lots_missing: number;
   images_upserted: number;
@@ -72,6 +74,31 @@ interface ClusterWorkerRow extends RowDataPacket {
   error_message: string | null;
 }
 
+interface AttemptWindowRow extends RowDataPacket {
+  started_at: Date | string | null;
+  finished_at: Date | string | null;
+}
+
+interface Photo404AttemptRow extends RowDataPacket {
+  lot_number: number;
+  url: string | null;
+  attempt_type: "lot_images_endpoint" | "image_head" | "image_get";
+  http_status: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  attempted_at: Date | string | null;
+}
+
+export interface Photo404AttemptReportRow {
+  lotNumber: number;
+  url: string | null;
+  attemptType: "lot_images_endpoint" | "image_head" | "image_get";
+  httpStatus: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  attemptedAt: Date | null;
+}
+
 function parseOptionalClusterRunId(): number | null {
   const raw = process.env.PHOTO_CLUSTER_RUN_ID;
   if (!raw || !raw.trim()) {
@@ -79,6 +106,52 @@ function parseOptionalClusterRunId(): number | null {
   }
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function toDate(value: Date | string | null): Date | null {
+  if (value instanceof Date) {
+    return value;
+  }
+  if (!value) {
+    return null;
+  }
+  return new Date(value);
+}
+
+async function fetchPhoto404AttemptsByWindow(
+  startedAt: Date,
+  finishedAt: Date
+): Promise<Photo404AttemptReportRow[]> {
+  const pool = getPool();
+  const [rows] = await pool.query<Photo404AttemptRow[]>(
+    `
+      SELECT
+        lot_number,
+        url,
+        attempt_type,
+        http_status,
+        error_code,
+        error_message,
+        attempted_at
+      FROM \`${env.mysql.databaseMedia}\`.\`photo_fetch_attempts\`
+      WHERE
+        http_status = 404
+        AND attempted_at >= ?
+        AND attempted_at <= ?
+      ORDER BY attempted_at ASC, id ASC
+    `,
+    [startedAt, finishedAt]
+  );
+
+  return rows.map(row => ({
+    lotNumber: Number(row.lot_number),
+    url: row.url ?? null,
+    attemptType: row.attempt_type,
+    httpStatus: row.http_status === null ? null : Number(row.http_status),
+    errorCode: row.error_code ?? null,
+    errorMessage: row.error_message ?? null,
+    attemptedAt: toDate(row.attempted_at),
+  }));
 }
 
 export async function createPhotoRun(): Promise<number> {
@@ -93,6 +166,54 @@ export async function createPhotoRun(): Promise<number> {
     [clusterRunId, env.photo.workerIndex, env.photo.workerTotal]
   );
   return result.insertId;
+}
+
+export async function fetchPhoto404AttemptsForRun(
+  runId: number
+): Promise<Photo404AttemptReportRow[]> {
+  const pool = getPool();
+  const [rows] = await pool.query<AttemptWindowRow[]>(
+    `
+      SELECT started_at, finished_at
+      FROM \`${env.mysql.databaseCore}\`.\`photo_runs\`
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [runId]
+  );
+
+  const window = rows[0];
+  const startedAt = toDate(window?.started_at ?? null);
+  const finishedAt = toDate(window?.finished_at ?? null);
+  if (!startedAt || !finishedAt) {
+    return [];
+  }
+
+  return fetchPhoto404AttemptsByWindow(startedAt, finishedAt);
+}
+
+export async function fetchPhoto404AttemptsForClusterRun(
+  clusterRunId: number
+): Promise<Photo404AttemptReportRow[]> {
+  const pool = getPool();
+  const [rows] = await pool.query<AttemptWindowRow[]>(
+    `
+      SELECT started_at, finished_at
+      FROM \`${env.mysql.databaseCore}\`.\`photo_cluster_runs\`
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [clusterRunId]
+  );
+
+  const window = rows[0];
+  const startedAt = toDate(window?.started_at ?? null);
+  const finishedAt = toDate(window?.finished_at ?? null);
+  if (!startedAt || !finishedAt) {
+    return [];
+  }
+
+  return fetchPhoto404AttemptsByWindow(startedAt, finishedAt);
 }
 
 export async function createPhotoClusterRun(selectedProxyCount: number): Promise<number> {
@@ -149,6 +270,7 @@ export async function completePhotoRunSuccess(
           'workerTotal', ?,
           'workerIndex', ?,
           'clusterRunId', ?,
+          'photoLinksProcessed', ?,
           'endpoint404Lots', ?
         )
       WHERE id = ?
@@ -167,6 +289,7 @@ export async function completePhotoRunSuccess(
       env.photo.workerTotal,
       env.photo.workerIndex,
       parseOptionalClusterRunId(),
+      counters.photoLinksProcessed,
       counters.endpoint404Lots,
       runId,
     ]
@@ -201,6 +324,7 @@ export async function completePhotoRunFailure(
           'workerTotal', ?,
           'workerIndex', ?,
           'clusterRunId', ?,
+          'photoLinksProcessed', ?,
           'endpoint404Lots', ?
         )
       WHERE id = ?
@@ -220,6 +344,7 @@ export async function completePhotoRunFailure(
       env.photo.workerTotal,
       env.photo.workerIndex,
       parseOptionalClusterRunId(),
+      counters.photoLinksProcessed,
       counters.endpoint404Lots,
       runId,
     ]
@@ -238,6 +363,14 @@ export async function fetchPhotoClusterRunSummary(
         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS workers_failed,
         COALESCE(SUM(lots_scanned), 0) AS total_lots_scanned,
         COALESCE(SUM(lots_processed), 0) AS total_lots_processed,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.photoLinksProcessed')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_photo_links_processed,
         COALESCE(SUM(lots_ok), 0) AS total_lots_ok,
         COALESCE(SUM(lots_missing), 0) AS total_lots_missing,
         COALESCE(SUM(images_upserted), 0) AS total_images_upserted,
@@ -265,6 +398,7 @@ export async function fetchPhotoClusterRunSummary(
     workersFailed: Number(row?.workers_failed ?? 0),
     totalLotsScanned: Number(row?.total_lots_scanned ?? 0),
     totalLotsProcessed: Number(row?.total_lots_processed ?? 0),
+    totalPhotoLinksProcessed: Number(row?.total_photo_links_processed ?? 0),
     totalLotsOk: Number(row?.total_lots_ok ?? 0),
     totalLotsMissing: Number(row?.total_lots_missing ?? 0),
     totalImagesUpserted: Number(row?.total_images_upserted ?? 0),
@@ -288,6 +422,9 @@ export async function fetchPhotoClusterRunWorkers(
         status,
         lots_scanned,
         lots_processed,
+        CAST(
+          COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.photoLinksProcessed')), '0') AS UNSIGNED
+        ) AS photo_links_processed,
         lots_ok,
         lots_missing,
         images_upserted,
@@ -315,6 +452,7 @@ export async function fetchPhotoClusterRunWorkers(
     status: row.status,
     lotsScanned: Number(row.lots_scanned),
     lotsProcessed: Number(row.lots_processed),
+    photoLinksProcessed: Number(row.photo_links_processed ?? 0),
     lotsOk: Number(row.lots_ok),
     lotsMissing: Number(row.lots_missing),
     imagesUpserted: Number(row.images_upserted),
@@ -341,6 +479,7 @@ export async function fetchPhotoClusterRunResult(
     mode: "cluster",
     workerTotal: env.photo.workerTotal,
     durationMs,
+    http404Report: null,
     ...summary,
   };
 }
@@ -366,6 +505,7 @@ export async function completePhotoClusterRunSuccess(clusterRunId: number): Prom
         total_images_bad_quality = ?,
         total_http_404_count = ?
         ,meta_json = JSON_OBJECT(
+          'totalPhotoLinksProcessed', ?,
           'totalEndpoint404Lots', ?,
           'workerTotal', ?,
           'batchSizePerWorker', ?,
@@ -385,6 +525,7 @@ export async function completePhotoClusterRunSuccess(clusterRunId: number): Prom
       summary.totalImagesFullSize,
       summary.totalImagesBadQuality,
       summary.totalHttp404Count,
+      summary.totalPhotoLinksProcessed,
       summary.totalEndpoint404Lots,
       env.photo.workerTotal,
       env.photo.batchSize,
@@ -419,6 +560,7 @@ export async function completePhotoClusterRunFailure(
         total_http_404_count = ?,
         error_message = ?,
         meta_json = JSON_OBJECT(
+          'totalPhotoLinksProcessed', ?,
           'totalEndpoint404Lots', ?,
           'workerTotal', ?,
           'batchSizePerWorker', ?,
@@ -439,6 +581,7 @@ export async function completePhotoClusterRunFailure(
       summary.totalImagesBadQuality,
       summary.totalHttp404Count,
       errorMessage.slice(0, 65_000),
+      summary.totalPhotoLinksProcessed,
       summary.totalEndpoint404Lots,
       env.photo.workerTotal,
       env.photo.batchSize,

@@ -2,7 +2,7 @@ import env from "../../config/env";
 import { getProxyPoolSnapshot, httpRequest, prepareProxyPool } from "../../lib/http-client";
 import { logger } from "../../lib/logger";
 import { normalizeCopartLotImagesUrl } from "../../lib/url-utils";
-import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
+import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { withAppLock } from "../locks/db-lock";
 import { inspectLotImage } from "./image-inspector";
 import {
@@ -22,6 +22,9 @@ import {
   selectImagesForStorage,
   summarizeImageChecks,
 } from "./photo-repository";
+import { cleanupReportFiles } from "../reports/csv-report";
+import { tryCreatePhoto404ReportForRun } from "../reports/run-artifacts";
+import { GeneratedReportFile } from "../reports/types";
 import {
   CheckedLotImage,
   LotImagesEndpointPayload,
@@ -43,6 +46,7 @@ function createCounters(): PhotoRunCounters {
   return {
     lotsScanned: 0,
     lotsProcessed: 0,
+    photoLinksProcessed: 0,
     lotsOk: 0,
     lotsMissing: 0,
     imagesUpserted: 0,
@@ -261,6 +265,7 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
     }
 
     const checkedLinks = await inspectParsedLinks(parsed.links);
+    counters.photoLinksProcessed += checkedLinks.length;
     const storageImages = selectImagesForStorage(checkedLinks);
     await replaceLotImages(candidate.lotNumber, storageImages, "merge");
 
@@ -326,11 +331,12 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
 }
 
 async function executePhotoSync(
-  options: { notifySuccess?: boolean; notifyError?: boolean } = {}
+  options: { notifySuccess?: boolean; notifyError?: boolean; build404Report?: boolean } = {}
 ): Promise<PhotoSyncRunSummary> {
   const startedAt = Date.now();
   const counters = createCounters();
   const runId = await createPhotoRun();
+  let http404Report: GeneratedReportFile | null = null;
 
   try {
     const candidateFetchStartedAt = Date.now();
@@ -359,6 +365,7 @@ async function executePhotoSync(
         logger.info("Photo sync progress", {
           lotsScanned: counters.lotsScanned,
           lotsProcessed: counters.lotsProcessed,
+          photoLinksProcessed: counters.photoLinksProcessed,
           lotsRemaining: Math.max(0, counters.lotsScanned - counters.lotsProcessed),
           lotsOk: counters.lotsOk,
           lotsMissing: counters.lotsMissing,
@@ -372,10 +379,17 @@ async function executePhotoSync(
 
     await completePhotoRunSuccess(runId, counters);
 
+    const shouldBuild404Report =
+      options.build404Report ?? ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary);
+    if (shouldBuild404Report) {
+      http404Report = await tryCreatePhoto404ReportForRun(runId);
+    }
+
     const durationMs = Date.now() - startedAt;
     logger.info("Photo sync finished", {
       lotsScanned: counters.lotsScanned,
       lotsProcessed: counters.lotsProcessed,
+      photoLinksProcessed: counters.photoLinksProcessed,
       lotsOk: counters.lotsOk,
       lotsMissing: counters.lotsMissing,
       imagesUpserted: counters.imagesUpserted,
@@ -396,6 +410,7 @@ async function executePhotoSync(
       workerIndex: env.photo.workerIndex,
       lotsScanned: counters.lotsScanned,
       lotsProcessed: counters.lotsProcessed,
+      photoLinksProcessed: counters.photoLinksProcessed,
       lotsOk: counters.lotsOk,
       lotsMissing: counters.lotsMissing,
       imagesUpserted: counters.imagesUpserted,
@@ -404,6 +419,7 @@ async function executePhotoSync(
       http404Count: counters.http404Count,
       endpoint404Lots: counters.endpoint404Lots,
       durationMs,
+      http404Report,
     };
 
     if ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary) {
@@ -412,6 +428,7 @@ async function executePhotoSync(
           "[PHOTO SYNC] success",
           `lots_scanned=${counters.lotsScanned}`,
           `lots_processed=${counters.lotsProcessed}`,
+          `photo_links_processed=${counters.photoLinksProcessed}`,
           `lots_ok=${counters.lotsOk}`,
           `lots_missing=${counters.lotsMissing}`,
           `images_upserted=${counters.imagesUpserted}`,
@@ -419,8 +436,21 @@ async function executePhotoSync(
           `images_bad_quality=${counters.imagesBadQuality}`,
           `http_404_count=${counters.http404Count}`,
           `endpoint_404_lots=${counters.endpoint404Lots}`,
+          `http_404_csv=${http404Report ? http404Report.filename : "none"}`,
         ].join("\n")
       );
+      await sendTelegramDocuments(
+        http404Report
+          ? [
+              {
+                path: http404Report.path,
+                filename: http404Report.filename,
+                caption: `HTTP 404 (${http404Report.rowCount})`,
+              },
+            ]
+          : []
+      );
+      await cleanupReportFiles([http404Report]);
     }
 
     return summary;
@@ -441,7 +471,7 @@ async function executePhotoSync(
 }
 
 export async function runPhotoSync(
-  options: { notifySuccess?: boolean; notifyError?: boolean } = {}
+  options: { notifySuccess?: boolean; notifyError?: boolean; build404Report?: boolean } = {}
 ): Promise<PhotoSyncExecutionResult> {
   const lockName =
     env.photo.workerTotal > 1 ? `photo_sync_worker_${env.photo.workerIndex}` : "photo_sync";

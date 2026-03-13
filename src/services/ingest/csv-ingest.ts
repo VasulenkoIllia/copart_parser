@@ -12,7 +12,13 @@ import { mapCsvRow } from "./row-mapper";
 import { CsvIngestExecutionResult, CsvIngestRunSummary, IngestCandidate, IngestCounters } from "./types";
 import env from "../../config/env";
 import { withAppLock } from "../locks/db-lock";
-import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
+import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
+import { cleanupReportFiles } from "../reports/csv-report";
+import {
+  InvalidCsvRowReportEntry,
+  tryCreateInvalidRowsReport,
+} from "../reports/run-artifacts";
+import { GeneratedReportFile } from "../reports/types";
 
 function getSourceDescriptor(): string {
   if (env.csv.localFile) {
@@ -68,16 +74,18 @@ async function flushBatch(
 }
 
 async function executeCsvIngest(
-  options: { notifySuccess?: boolean; notifyError?: boolean } = {}
+  options: { notifySuccess?: boolean; notifyError?: boolean; buildInvalidRowsReport?: boolean } = {}
 ): Promise<CsvIngestRunSummary> {
   const startedAt = Date.now();
   const sourceUrl = getSourceDescriptor();
   const counters = createCounters();
   const batch: IngestCandidate[] = [];
+  const invalidRows: InvalidCsvRowReportEntry[] = [];
   const maxRows = env.ingest.maxRows;
   let maxRowsReached = false;
   let prunedLots = 0;
   let hydratedLots = 0;
+  let invalidRowsReport: GeneratedReportFile | null = null;
 
   logger.info("CSV ingest started", {
     sourceUrl: toLoggableSource(sourceUrl),
@@ -91,15 +99,29 @@ async function executeCsvIngest(
   try {
     const stream = await downloadCsvStream();
 
-    for await (const row of iterateCsvRows(stream, () => {
+    for await (const row of iterateCsvRows(stream, meta => {
       counters.rowsTotal += 1;
       counters.rowsInvalid += 1;
+      invalidRows.push({
+        source: "csv_parse",
+        line: meta.line,
+        reason: meta.message,
+        raw: meta.raw ?? "",
+        recordJson: "",
+      });
     })) {
       counters.rowsTotal += 1;
 
-      const mapped = mapCsvRow(row);
+      const mapped = mapCsvRow(row.record);
       if (!mapped) {
         counters.rowsInvalid += 1;
+        invalidRows.push({
+          source: "row_mapper",
+          line: row.line,
+          reason: "map_csv_row_returned_null",
+          raw: row.raw ?? "",
+          recordJson: JSON.stringify(row.record),
+        });
         continue;
       }
 
@@ -156,6 +178,12 @@ async function executeCsvIngest(
 
     await completeIngestRunSuccess(runId, counters, sourceUrl);
 
+    const shouldBuildInvalidRowsReport =
+      options.buildInvalidRowsReport ?? ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary);
+    if (shouldBuildInvalidRowsReport) {
+      invalidRowsReport = await tryCreateInvalidRowsReport(invalidRows);
+    }
+
     const durationMs = Date.now() - startedAt;
     const rowsPerSec = counters.rowsTotal > 0 ? Number((counters.rowsTotal / (durationMs / 1000)).toFixed(2)) : 0;
     logger.info("CSV ingest finished", {
@@ -187,6 +215,7 @@ async function executeCsvIngest(
       durationMs,
       maxRows: maxRows > 0 ? maxRows : null,
       maxRowsReached,
+      invalidRowsReport,
     };
 
     if ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary) {
@@ -201,8 +230,21 @@ async function executeCsvIngest(
           `rows_unchanged=${counters.rowsUnchanged}`,
           `hydrated_lots_from_media=${hydratedLots}`,
           `pruned_lots=${prunedLots}`,
+          `invalid_rows_csv=${invalidRowsReport ? invalidRowsReport.filename : "none"}`,
         ].join("\n")
       );
+      await sendTelegramDocuments(
+        invalidRowsReport
+          ? [
+              {
+                path: invalidRowsReport.path,
+                filename: invalidRowsReport.filename,
+                caption: `Биті рядки CSV (${invalidRowsReport.rowCount})`,
+              },
+            ]
+          : []
+      );
+      await cleanupReportFiles([invalidRowsReport]);
     }
 
     return summary;
@@ -223,7 +265,7 @@ async function executeCsvIngest(
 }
 
 export async function runCsvIngest(
-  options: { notifySuccess?: boolean; notifyError?: boolean } = {}
+  options: { notifySuccess?: boolean; notifyError?: boolean; buildInvalidRowsReport?: boolean } = {}
 ): Promise<CsvIngestExecutionResult> {
   const locked = await withAppLock("csv_ingest", () => executeCsvIngest(options));
   if (locked === null) {

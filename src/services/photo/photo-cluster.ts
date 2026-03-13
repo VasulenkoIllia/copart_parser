@@ -14,6 +14,7 @@ import {
   fetchPhotoClusterRunWorkers,
 } from "./photo-repository";
 import { PhotoClusterRunResult } from "./types";
+import { tryCreatePhoto404ReportForClusterRun } from "../reports/run-artifacts";
 
 interface WorkerRunResult {
   workerIndex: number;
@@ -220,7 +221,9 @@ function runWorker(
   });
 }
 
-export async function runPhotoCluster(): Promise<PhotoClusterRunResult> {
+export async function runPhotoCluster(
+  options: { build404Report?: boolean } = {}
+): Promise<PhotoClusterRunResult> {
   const workerTotal = env.photo.workerTotal;
   if (workerTotal < 1) {
     throw new Error("PHOTO_WORKER_TOTAL must be >= 1 for photo:cluster");
@@ -267,6 +270,9 @@ export async function runPhotoCluster(): Promise<PhotoClusterRunResult> {
 
     const workers = await fetchPhotoClusterRunWorkers(clusterRunId);
     const summary = await fetchPhotoClusterRunResult(clusterRunId, Date.now() - startedAt);
+    if (options.build404Report) {
+      summary.http404Report = await tryCreatePhoto404ReportForClusterRun(clusterRunId);
+    }
     logger.info("Photo cluster finished", {
       clusterRunId,
       workerTotal,
@@ -282,6 +288,7 @@ export async function runPhotoCluster(): Promise<PhotoClusterRunResult> {
         workerIndex: worker.workerIndex,
         status: worker.status,
         lotsProcessed: worker.lotsProcessed,
+        photoLinksProcessed: worker.photoLinksProcessed,
         lotsOk: worker.lotsOk,
         lotsMissing: worker.lotsMissing,
         imagesUpserted: worker.imagesUpserted,

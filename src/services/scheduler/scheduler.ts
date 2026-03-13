@@ -46,12 +46,12 @@ function describeCron(cronExpr: string): string {
       const minuteValue = Number.parseInt(minute, 10);
 
       if (hour === "*") {
-        return `щогодини о ${pad2(minuteValue)} хв`;
+        return `щогодини о :${pad2(minuteValue)}`;
       }
 
       if (/^\*\/\d+$/.test(hour)) {
         const interval = Number.parseInt(hour.slice(2), 10);
-        return `кожні ${interval} год о ${pad2(minuteValue)}:${pad2(0)}`.replace(":00", `:${pad2(minuteValue)}`);
+        return `кожні ${interval} год о :${pad2(minuteValue)}`;
       }
 
       const hours = parseCronNumberList(hour);

@@ -1,3 +1,5 @@
+import { GeneratedReportFile } from "../reports/types";
+
 export type LotPhotoStatus = "unknown" | "ok" | "missing";
 
 export interface PhotoLotCandidate {
@@ -33,6 +35,7 @@ export interface CheckedLotImage extends ParsedLotImageLink {
 export interface PhotoRunCounters {
   lotsScanned: number;
   lotsProcessed: number;
+  photoLinksProcessed: number;
   lotsOk: number;
   lotsMissing: number;
   imagesUpserted: number;
@@ -49,6 +52,7 @@ export interface PhotoSyncRunSummary {
   workerIndex: number;
   lotsScanned: number;
   lotsProcessed: number;
+  photoLinksProcessed: number;
   lotsOk: number;
   lotsMissing: number;
   imagesUpserted: number;
@@ -57,6 +61,7 @@ export interface PhotoSyncRunSummary {
   http404Count: number;
   endpoint404Lots: number;
   durationMs: number;
+  http404Report: GeneratedReportFile | null;
 }
 
 export interface PhotoSyncExecutionResult {
@@ -71,6 +76,7 @@ export interface PhotoClusterRunWorkerRow {
   status: "running" | "success" | "failed";
   lotsScanned: number;
   lotsProcessed: number;
+  photoLinksProcessed: number;
   lotsOk: number;
   lotsMissing: number;
   imagesUpserted: number;
@@ -90,6 +96,7 @@ export interface PhotoClusterRunSummary {
   workersFailed: number;
   totalLotsScanned: number;
   totalLotsProcessed: number;
+  totalPhotoLinksProcessed: number;
   totalLotsOk: number;
   totalLotsMissing: number;
   totalImagesUpserted: number;
@@ -104,6 +111,7 @@ export interface PhotoClusterRunResult extends PhotoClusterRunSummary {
   mode: "cluster";
   workerTotal: number;
   durationMs: number;
+  http404Report: GeneratedReportFile | null;
 }
 
 export interface LotImagesEndpointPayload {
