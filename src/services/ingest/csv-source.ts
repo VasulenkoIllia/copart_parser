@@ -1,5 +1,5 @@
-import { parse } from "csv-parse";
 import fs from "fs";
+import readline from "readline";
 import { Readable } from "stream";
 import env from "../../config/env";
 import { httpRequest } from "../../lib/http-client";
@@ -73,26 +73,72 @@ interface SkipRecordMeta {
   raw: string | null;
 }
 
-interface ParsedCsvRowEnvelope {
-  record?: Record<string, unknown>;
-  raw?: string;
-  info?: {
-    lines?: number;
-  };
-}
-
 export interface ParsedCsvRow {
   record: CsvRecord;
   raw: string | null;
   line: number | null;
 }
 
-function extractErrorLine(err: unknown): number | null {
-  if (!err || typeof err !== "object") {
-    return null;
+function stripBom(value: string): string {
+  return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
+}
+
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = [];
+  let current = "";
+  let inQuotedField = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+
+    if (char === "\"") {
+      if (inQuotedField) {
+        const next = index + 1 < line.length ? line[index + 1] : null;
+        if (next === "\"") {
+          current += "\"";
+          index += 1;
+          continue;
+        }
+
+        if (next === "," || next === null) {
+          inQuotedField = false;
+          continue;
+        }
+
+        // Copart source sometimes sends raw quotes inside quoted text (`125" SLEEPER CAB`).
+        current += "\"";
+        continue;
+      }
+
+      if (current.trim() === "") {
+        inQuotedField = true;
+        continue;
+      }
+
+      current += "\"";
+      continue;
+    }
+
+    if (char === "," && !inQuotedField) {
+      fields.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
   }
-  const candidate = (err as { lines?: unknown }).lines;
-  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null;
+
+  fields.push(current);
+  return fields;
+}
+
+function buildRecord(headers: string[], values: string[]): CsvRecord {
+  const normalized: CsvRecord = {};
+  for (let index = 0; index < headers.length; index += 1) {
+    const header = headers[index];
+    normalized[header] = values[index] ?? "";
+  }
+  return normalized;
 }
 
 export async function* iterateCsvRows(
@@ -100,26 +146,35 @@ export async function* iterateCsvRows(
   onSkipRecord?: (meta: SkipRecordMeta) => void
 ): AsyncGenerator<ParsedCsvRow> {
   let skipped = 0;
-  const parser = parse({
-    columns: true,
-    bom: true,
-    raw: true,
-    info: true,
-    skip_empty_lines: true,
-    relax_column_count: true,
-    relax_quotes: env.csv.relaxQuotes,
-    skip_records_with_error: env.csv.skipRecordsWithError,
-    trim: true,
-    on_skip: (err, raw) => {
+  let lineNumber = 0;
+  let headers: string[] | null = null;
+  const reader = readline.createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
+
+  for await (const rawLine of reader) {
+    lineNumber += 1;
+    const line = lineNumber === 1 ? stripBom(rawLine) : rawLine;
+    if (!line.trim()) {
+      continue;
+    }
+
+    const values = parseCsvLine(line);
+    if (!headers) {
+      headers = values.map(value => value.trim());
+      continue;
+    }
+
+    if (values.length !== headers.length) {
       skipped += 1;
-      const line = extractErrorLine(err);
-      const message = err?.message ?? "unknown_csv_parse_error";
-      onSkipRecord?.({ message, line, raw: raw ?? null });
+      const message = `csv_column_count_mismatch expected=${headers.length} actual=${values.length}`;
+      onSkipRecord?.({ message, line: lineNumber, raw: line });
 
       if (skipped <= env.csv.skipLogLimit) {
         logger.warn("CSV row skipped due to parse error", {
           skipped,
-          line,
+          line: lineNumber,
           message,
         });
       } else if (skipped === env.csv.skipLogLimit + 1) {
@@ -128,31 +183,13 @@ export async function* iterateCsvRows(
           skipLogLimit: env.csv.skipLogLimit,
         });
       }
-    },
-  });
-
-  stream.pipe(parser);
-
-  for await (const row of parser) {
-    if (!row || typeof row !== "object") {
       continue;
     }
 
-    const envelope = row as ParsedCsvRowEnvelope;
-    const sourceRecord =
-      envelope.record && typeof envelope.record === "object" ? envelope.record : (row as Record<string, unknown>);
-    const normalized: CsvRecord = {};
-    for (const [key, value] of Object.entries(sourceRecord)) {
-      normalized[String(key)] = value === null || value === undefined ? "" : String(value);
-    }
-
     yield {
-      record: normalized,
-      raw: typeof envelope.raw === "string" ? envelope.raw : null,
-      line:
-        envelope.info && typeof envelope.info.lines === "number" && Number.isFinite(envelope.info.lines)
-          ? envelope.info.lines
-          : null,
+      record: buildRecord(headers, values),
+      raw: line,
+      line: lineNumber,
     };
   }
 }

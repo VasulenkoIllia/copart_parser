@@ -56,6 +56,7 @@
 | 2026-03-12 | Production ingest lot limit by ENV | Done | Додано `INGEST_MAX_ROWS` для контролю кількості лотів з реального CSV без локальних файлів |
 | 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |
 | 2026-03-13 | CSV source cache-bust | Done | Remote CSV запитується з `_ts` query-param + `no-cache` headers; у логах видно `cf-cache-status/etag/last-modified` |
+| 2026-03-13 | Tolerant CSV line parser | Done | `ingest` більше не валиться на неекранованих `"` всередині quoted field; битий рядок не знищує весь хвіст CSV |
 
 ## Що протестовано
 
@@ -94,6 +95,7 @@
 | 2026-03-13 | Isolated verify DB scenario (`copart_core_verify` / `copart_media_verify`) | Passed | Після seed одного media-лота кандидатом лишився тільки лот без фото; після нового CSV core став snapshot, media зберегла старий лот |
 | 2026-03-13 | Server benchmark: `fresh-test` (`12 workers`, `150 concurrency`, `top-300 proxies`) | Passed | `photo_cluster_runs`: `1000 lots / 11.63s`, `lots_ok=697`, `lots_missing=303`, `images_upserted=7754`; worker durations `9.30s..11.31s`, всі `12/12` воркерів `success` |
 | 2026-03-13 | HEAD до remote CSV: base vs cache-bust URL | Observed | Базовий URL повернув `cf-cache-status=HIT`, cache-bust URL (`_ts=...`) повернув `MISS`; обидва `200`, отже stale CDN-копія була реально можлива |
+| 2026-03-13 | Full parse of live CSV with tolerant parser | Passed | Поточний live CSV: `171587 valid`, `5 invalid`; старий parser зупинявся після рядка `4108` через `125" SLEEPER CAB` |
 
 ## В роботі
 
