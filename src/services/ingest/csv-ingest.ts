@@ -83,6 +83,27 @@ function invalidRowsPercent(counters: IngestCounters): number {
   return Number(((counters.rowsInvalid / counters.rowsTotal) * 100).toFixed(4));
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRetryableIngestError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (!message.trim()) {
+    return false;
+  }
+
+  const retryableTokens = [
+    "aborted",
+    "socket hang up",
+    "econnreset",
+    "etimedout",
+    "premature close",
+    "stream closed",
+  ];
+  return retryableTokens.some(token => message.includes(token));
+}
+
 async function executeCsvIngest(
   options: { notifySuccess?: boolean; notifyError?: boolean; buildInvalidRowsReport?: boolean } = {}
 ): Promise<CsvIngestRunSummary> {
@@ -286,10 +307,50 @@ async function executeCsvIngest(
   }
 }
 
+async function executeCsvIngestWithRetries(
+  options: { notifySuccess?: boolean; notifyError?: boolean; buildInvalidRowsReport?: boolean } = {}
+): Promise<CsvIngestRunSummary> {
+  const maxAttempts = env.ingest.executionRetries;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await executeCsvIngest({
+        ...options,
+        notifyError: false,
+      });
+    } catch (error) {
+      lastError = error;
+      const retryable = isRetryableIngestError(error);
+      if (!retryable || attempt >= maxAttempts) {
+        if (options.notifyError ?? true) {
+          await sendTelegramError("CSV INGEST FAILED", error);
+        }
+        throw error;
+      }
+
+      const delayMs = env.ingest.executionRetryDelayMs * attempt;
+      logger.warn("CSV ingest attempt failed; retrying full run", {
+        attempt,
+        maxAttempts,
+        delayMs,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await sleep(delayMs);
+    }
+  }
+
+  const fallbackError = lastError instanceof Error ? lastError : new Error(String(lastError ?? "Unknown ingest error"));
+  if (options.notifyError ?? true) {
+    await sendTelegramError("CSV INGEST FAILED", fallbackError);
+  }
+  throw fallbackError;
+}
+
 export async function runCsvIngest(
   options: { notifySuccess?: boolean; notifyError?: boolean; buildInvalidRowsReport?: boolean } = {}
 ): Promise<CsvIngestExecutionResult> {
-  const locked = await withAppLock("csv_ingest", () => executeCsvIngest(options));
+  const locked = await withAppLock("csv_ingest", () => executeCsvIngestWithRetries(options));
   if (locked === null) {
     logger.warn("CSV ingest skipped because another run owns the lock");
     return { executed: false };

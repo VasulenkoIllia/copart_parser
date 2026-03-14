@@ -49,6 +49,8 @@ interface AppEnv {
     pruneMissingLots: boolean;
     pruneMaxInvalidRows: number;
     pruneMaxInvalidPercent: number;
+    executionRetries: number;
+    executionRetryDelayMs: number;
     rowHashAlgo: string;
   };
   photo: {
@@ -270,6 +272,8 @@ const env: AppEnv = {
     pruneMissingLots: toBoolean("INGEST_PRUNE_MISSING_LOTS", true),
     pruneMaxInvalidRows: toInt("INGEST_PRUNE_MAX_INVALID_ROWS", 250),
     pruneMaxInvalidPercent: toFloat("INGEST_PRUNE_MAX_INVALID_PERCENT", 2),
+    executionRetries: toInt("INGEST_EXECUTION_RETRIES", 2),
+    executionRetryDelayMs: toInt("INGEST_EXECUTION_RETRY_DELAY_MS", 5_000),
     rowHashAlgo: optional("INGEST_ROW_HASH_ALGO", "sha256"),
   },
   photo: {
@@ -340,6 +344,14 @@ if (env.ingest.pruneMaxInvalidRows < 0) {
 
 if (env.ingest.pruneMaxInvalidPercent < 0 || env.ingest.pruneMaxInvalidPercent > 100) {
   throw new Error("INGEST_PRUNE_MAX_INVALID_PERCENT must be in range [0, 100]");
+}
+
+if (env.ingest.executionRetries < 1) {
+  throw new Error("INGEST_EXECUTION_RETRIES must be >= 1");
+}
+
+if (env.ingest.executionRetryDelayMs < 0) {
+  throw new Error("INGEST_EXECUTION_RETRY_DELAY_MS must be >= 0");
 }
 
 if (!isSafeMysqlIdentifier(env.mysql.databaseCore)) {
