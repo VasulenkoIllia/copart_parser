@@ -187,34 +187,24 @@ export async function upsertLotsBatch(
       ON DUPLICATE KEY UPDATE
         yard_number = VALUES(yard_number),
         photo_status = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
-          OR photo_status = 'missing',
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
           'unknown',
           photo_status
         ),
         photo_404_count = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
-          OR photo_status = 'missing',
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
           0,
           photo_404_count
         ),
         photo_404_since = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
-          OR photo_status = 'missing',
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
           NULL,
           photo_404_since
         ),
         next_photo_retry_at = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
-          OR photo_status = 'missing',
+          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
           NULL,
           next_photo_retry_at
-        ),
-        last_photo_check_at = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), '')
-          OR photo_status = 'missing',
-          NULL,
-          last_photo_check_at
         ),
         image_url = VALUES(image_url),
         row_hash = VALUES(row_hash),
@@ -262,7 +252,8 @@ export async function hydrateInsertedLotsPhotoStatusFromMedia(runId: number): Pr
         l.last_photo_check_at = COALESCE(m.max_checked_at, CURRENT_TIMESTAMP(3))
       WHERE
         l.ingest_run_id = ?
-        AND l.photo_status <> 'ok'
+        AND l.photo_status = 'unknown'
+        AND l.last_photo_check_at IS NULL
     `,
     [runId]
   );

@@ -28,8 +28,6 @@ interface AppEnv {
     retries: number;
     retryDelayMs: number;
     streamHighWaterMark: number;
-    skipRecordsWithError: boolean;
-    relaxQuotes: boolean;
     skipLogLimit: number;
   };
   mysql: {
@@ -46,10 +44,11 @@ interface AppEnv {
   ingest: {
     batchSize: number;
     upsertChunk: number;
-    concurrency: number;
     progressEveryRows: number;
     maxRows: number;
     pruneMissingLots: boolean;
+    pruneMaxInvalidRows: number;
+    pruneMaxInvalidPercent: number;
     rowHashAlgo: string;
   };
   photo: {
@@ -128,6 +127,18 @@ function toInt(name: string, fallback: number): number {
   return parsed;
 }
 
+function toFloat(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid float value for ${name}: "${raw}"`);
+  }
+  return parsed;
+}
+
 function toBoolean(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (raw === undefined || raw === "") {
@@ -182,10 +193,10 @@ function parseProxyListFromFile(filePath: string): string[] {
     .filter(line => Boolean(line) && !line.startsWith("#"));
 }
 
-function parseProxyList(listEnvName: string, fileEnvName: string): string[] {
+function parseProxyList(mode: HttpMode, listEnvName: string, fileEnvName: string): string[] {
   const inline = parseList(listEnvName);
   const filePath = optional(fileEnvName, "");
-  const fromFile = parseProxyListFromFile(filePath);
+  const fromFile = mode === "direct" ? [] : parseProxyListFromFile(filePath);
 
   if (inline.length === 0) {
     return fromFile;
@@ -212,6 +223,10 @@ function parseLogLevel(name: string, fallback: LogLevel): LogLevel {
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
+function isSafeMysqlIdentifier(value: string): boolean {
+  return /^[A-Za-z0-9_]+$/.test(value);
+}
+
 const env: AppEnv = {
   app: {
     name: optional("APP_NAME", "copart-parser"),
@@ -234,8 +249,6 @@ const env: AppEnv = {
     retries: toInt("CSV_DOWNLOAD_RETRIES", 5),
     retryDelayMs: toInt("CSV_DOWNLOAD_RETRY_DELAY_MS", 5000),
     streamHighWaterMark: toInt("CSV_STREAM_HIGH_WATER_MARK", 1_048_576),
-    skipRecordsWithError: toBoolean("CSV_SKIP_RECORDS_WITH_ERROR", true),
-    relaxQuotes: toBoolean("CSV_RELAX_QUOTES", true),
     skipLogLimit: toInt("CSV_PARSE_SKIP_LOG_LIMIT", 20),
   },
   mysql: {
@@ -252,10 +265,11 @@ const env: AppEnv = {
   ingest: {
     batchSize: toInt("INGEST_BATCH_SIZE", 1000),
     upsertChunk: toInt("INGEST_UPSERT_CHUNK", 500),
-    concurrency: toInt("INGEST_CONCURRENCY", 4),
     progressEveryRows: toInt("INGEST_PROGRESS_EVERY_ROWS", 5_000),
     maxRows: toInt("INGEST_MAX_ROWS", 0),
     pruneMissingLots: toBoolean("INGEST_PRUNE_MISSING_LOTS", true),
+    pruneMaxInvalidRows: toInt("INGEST_PRUNE_MAX_INVALID_ROWS", 250),
+    pruneMaxInvalidPercent: toFloat("INGEST_PRUNE_MAX_INVALID_PERCENT", 2),
     rowHashAlgo: optional("INGEST_ROW_HASH_ALGO", "sha256"),
   },
   photo: {
@@ -279,7 +293,7 @@ const env: AppEnv = {
   proxy: {
     mode: parseHttpMode("HTTP_MODE", "direct"),
     listFile: optional("PROXY_LIST_FILE", ""),
-    list: parseProxyList("PROXY_LIST", "PROXY_LIST_FILE"),
+    list: [],
     rotation: optional("PROXY_ROTATION", "strict"),
     maxRoutesPerRequest: toInt("PROXY_MAX_ROUTES_PER_REQUEST", 5),
     healthcheckUrl: optional("PROXY_HEALTHCHECK_URL", "https://www.copart.com/"),
@@ -306,6 +320,8 @@ const env: AppEnv = {
   },
 };
 
+env.proxy.list = parseProxyList(env.proxy.mode, "PROXY_LIST", "PROXY_LIST_FILE");
+
 if (env.ingest.upsertChunk > env.ingest.batchSize) {
   throw new Error("INGEST_UPSERT_CHUNK must be <= INGEST_BATCH_SIZE");
 }
@@ -316,6 +332,22 @@ if (env.ingest.progressEveryRows < 1) {
 
 if (env.ingest.maxRows < 0) {
   throw new Error("INGEST_MAX_ROWS must be >= 0");
+}
+
+if (env.ingest.pruneMaxInvalidRows < 0) {
+  throw new Error("INGEST_PRUNE_MAX_INVALID_ROWS must be >= 0");
+}
+
+if (env.ingest.pruneMaxInvalidPercent < 0 || env.ingest.pruneMaxInvalidPercent > 100) {
+  throw new Error("INGEST_PRUNE_MAX_INVALID_PERCENT must be in range [0, 100]");
+}
+
+if (!isSafeMysqlIdentifier(env.mysql.databaseCore)) {
+  throw new Error("MYSQL_DATABASE_CORE contains unsupported characters");
+}
+
+if (!isSafeMysqlIdentifier(env.mysql.databaseMedia)) {
+  throw new Error("MYSQL_DATABASE_MEDIA contains unsupported characters");
 }
 
 if (env.photo.workerTotal < 1) {

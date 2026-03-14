@@ -12,7 +12,7 @@ import { mapCsvRow } from "./row-mapper";
 import { CsvIngestExecutionResult, CsvIngestRunSummary, IngestCandidate, IngestCounters } from "./types";
 import env from "../../config/env";
 import { withAppLock } from "../locks/db-lock";
-import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
+import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { cleanupReportFiles } from "../reports/csv-report";
 import {
   aggregateInvalidRows,
@@ -76,6 +76,13 @@ async function flushBatch(
   }
 }
 
+function invalidRowsPercent(counters: IngestCounters): number {
+  if (counters.rowsTotal <= 0) {
+    return 0;
+  }
+  return Number(((counters.rowsInvalid / counters.rowsTotal) * 100).toFixed(4));
+}
+
 async function executeCsvIngest(
   options: { notifySuccess?: boolean; notifyError?: boolean; buildInvalidRowsReport?: boolean } = {}
 ): Promise<CsvIngestRunSummary> {
@@ -96,6 +103,9 @@ async function executeCsvIngest(
     batchSize: env.ingest.batchSize,
     upsertChunk: env.ingest.upsertChunk,
     maxRows: maxRows > 0 ? maxRows : "unlimited",
+    pruneMissingLots: env.ingest.pruneMissingLots,
+    pruneMaxInvalidRows: env.ingest.pruneMaxInvalidRows,
+    pruneMaxInvalidPercent: env.ingest.pruneMaxInvalidPercent,
   });
 
   const runId = await createIngestRun(sourceUrl);
@@ -173,6 +183,22 @@ async function executeCsvIngest(
 
     const skipPruneForLimitedRun = maxRows > 0 && maxRowsReached;
     if (env.ingest.pruneMissingLots && !skipPruneForLimitedRun) {
+      const invalidPercent = invalidRowsPercent(counters);
+      const exceedsInvalidRows = counters.rowsInvalid > env.ingest.pruneMaxInvalidRows;
+      const exceedsInvalidPercent = invalidPercent > env.ingest.pruneMaxInvalidPercent;
+      if (exceedsInvalidRows || exceedsInvalidPercent) {
+        throw new Error(
+          [
+            "CSV invalid rows threshold exceeded; prune aborted",
+            `rows_invalid=${counters.rowsInvalid}`,
+            `rows_total=${counters.rowsTotal}`,
+            `invalid_percent=${invalidPercent}`,
+            `max_invalid_rows=${env.ingest.pruneMaxInvalidRows}`,
+            `max_invalid_percent=${env.ingest.pruneMaxInvalidPercent}`,
+          ].join("; ")
+        );
+      }
+
       prunedLots = await pruneMissingLots(runId);
     } else if (env.ingest.pruneMissingLots && skipPruneForLimitedRun) {
       logger.warn("CSV ingest prune skipped because run used INGEST_MAX_ROWS limit", {
@@ -238,31 +264,7 @@ async function executeCsvIngest(
           `rows_unchanged=${counters.rowsUnchanged}`,
           `hydrated_lots_from_media=${hydratedLots}`,
           `pruned_lots=${prunedLots}`,
-          `invalid_rows_csv=${invalidRowsReport ? invalidRowsReport.filename : "none"}`,
-          `invalid_rows_debug_csv=${invalidRowsDebugReport ? invalidRowsDebugReport.filename : "none"}`,
         ].join("\n")
-      );
-      await sendTelegramDocuments(
-        [
-          ...(invalidRowsReport
-            ? [
-                {
-                  path: invalidRowsReport.path,
-                  filename: invalidRowsReport.filename,
-                  caption: `Биті рядки CSV (${invalidRowsReport.rowCount})`,
-                },
-              ]
-            : []),
-          ...(invalidRowsDebugReport
-            ? [
-                {
-                  path: invalidRowsDebugReport.path,
-                  filename: invalidRowsDebugReport.filename,
-                  caption: `Биті рядки CSV debug raw (${invalidRowsDebugReport.rowCount})`,
-                },
-              ]
-            : []),
-        ]
       );
       await cleanupReportFiles([invalidRowsReport, invalidRowsDebugReport]);
     }

@@ -58,21 +58,21 @@ CSV_LOCAL_FILE=/tmp/copart_sample.csv MYSQL_PORT=3307 npm run ingest:csv
 Швидкий старт:
 
 ```bash
-make build
-make up
-make migrate
+docker compose build app
+docker compose up -d mysql app
+docker compose run --rm app node dist/index.js db:migrate
 ```
 
 Базові команди:
 
-- `make ps` — стан контейнерів.
-- `make logs-app` — live логи сервісу.
-- `make logs-db` — live логи MySQL.
-- `make ingest` — запуск ingest в контейнері.
-- `make photo-sync` — запуск photo-sync в контейнері.
-- `make pipeline` — одноразовий повний цикл.
-- `make proxy-check` — перевірка проксі-пулу перед запуском.
-- `make fresh-test` — повний чистий тестовий цикл (`db-drop -> migrate -> ingest(1000) -> photo:cluster -> SQL summary`).
+- `docker compose ps` — стан контейнерів.
+- `docker compose logs -f app` — live логи сервісу.
+- `docker compose logs -f mysql` — live логи MySQL.
+- `docker compose run --rm app node dist/index.js ingest:csv` — запуск ingest в контейнері.
+- `docker compose run --rm app node dist/index.js photo:sync` — запуск photo-sync в контейнері.
+- `docker compose run --rm app node dist/index.js pipeline:run-once` — одноразовий повний цикл.
+- `docker compose run --rm app node dist/index.js proxy:check` — перевірка проксі-пулу.
+- `./scripts/fresh-test.sh` — повний чистий тестовий цикл (`db-drop -> migrate -> ingest(1000) -> photo:cluster -> SQL summary`).
 
 ## Автоматичний режим
 
@@ -127,17 +127,14 @@ docker compose up -d mysql app
 - скільки фото було збережено;
 - яка конфігураційна паралельність photo-stage (`workers * fetchConcurrency`);
 - час `ingest`, час `photo`, загальний час оновлення.
-- якщо є проблемні дані, додатково прикріплюються 2 CSV:
-  - `invalid_rows` — биті/некоректні CSV-рядки з причиною;
-  - `invalid_rows_debug` — debug-версія з повним `raw` проблемного блоку;
-  - `http_404` — усі HTTP `404` за поточний photo-run.
+- якщо є проблемні дані, додатково прикріплюється CSV `http_404` (усі HTTP `404` за поточний photo-run).
 
 Команди для "чистого" запуску:
 
-- `make db-reset` — швидке очищення runtime-таблиць (дані лотів/фото/рани).
-- `make db-drop` — повний drop/recreate двох БД.
-- `make clean-run` — `db-reset -> ingest -> photo-sync`.
-- `make fresh-test` — рекомендований відтворюваний бенч з нуля через `scripts/fresh-test.sh`.
+- `npm run db:reset` — швидке очищення runtime-таблиць (дані лотів/фото/рани).
+- `npm run db:drop` — повний drop/recreate двох БД.
+- `npm run ingest:csv && npm run photo:sync` — локальний clean-run без `make`.
+- `./scripts/fresh-test.sh` — рекомендований відтворюваний бенч з нуля.
 
 ## Команди
 
@@ -152,14 +149,15 @@ docker compose up -d mysql app
 - `npm run db:reset` — швидке очищення runtime-таблиць через Docker MySQL.
 - `npm run db:drop` — повний drop/recreate двох БД через Docker MySQL.
 - `./scripts/fresh-test.sh` — один командний сценарій чистого тесту з підсумковими SQL-метриками.
+- `npm run test:photo-update` — локальний матричний тест-кейсер для перевірки photo update логіки (old/new/mix CSV + SQL-валидація після кожного run).
 
 Швидкий стабільний старт з нуля (рекомендовано для бенчів):
 
 ```bash
-make fresh-test
+./scripts/fresh-test.sh
 ```
 
-`make fresh-test` тепер за замовчуванням використовує benchmark-профіль:
+`scripts/fresh-test.sh` за замовчуванням використовує benchmark-профіль:
 
 - `INGEST_MAX_ROWS=1000`
 - `PHOTO_WORKER_TOTAL=12`
@@ -174,8 +172,43 @@ make fresh-test
 Налаштування прогону через ENV (приклад):
 
 ```bash
-INGEST_MAX_ROWS=1000 PHOTO_WORKER_TOTAL=12 PHOTO_FETCH_CONCURRENCY=150 PROXY_PREFLIGHT_TOP_N=300 PROXY_PREFLIGHT_MIN_WORKING=250 make fresh-test
+INGEST_MAX_ROWS=1000 PHOTO_WORKER_TOTAL=12 PHOTO_FETCH_CONCURRENCY=150 PROXY_PREFLIGHT_TOP_N=300 PROXY_PREFLIGHT_MIN_WORKING=250 ./scripts/fresh-test.sh
 ```
+
+## Локальний тест photo update (old/new/mix)
+
+Для перевірки, що:
+
+- лоти з уже наявними `hd` фото не йдуть у повторні photo-запити;
+- нові лоти навпаки потрапляють у photo-обробку;
+- усе логувалося в консоль по кожному run + перевірялось SQL-запитами;
+
+використовуйте матричний раннер:
+
+```bash
+npm run test:photo-update
+```
+
+Скрипт:
+
+1. Берe реальний CSV (або локальний через `PHOTO_TEST_SOURCE_FILE`).
+2. Формує seed на 100 лотів.
+3. Робить seed-run (`ingest + photo:sync`) для наповнення media.
+4. Генерує матрицю кейсів `old/new` (за замовчуванням totals: `10,15`, тобто всі split-комбінації).
+5. Для кожного кейсу запускає `ingest + photo:sync`, потім робить SQL-валидацію:
+   - `oldDueBefore`, `oldTouched`, `oldAttempts`;
+   - `newDueBefore`, `newTouched`, `newAttempts`;
+   - приріст валідних `hd` у media.
+
+Повний список кейсів і правила PASS/FAIL: [docs/photo-update-test-cases.md](docs/photo-update-test-cases.md).
+
+Основні ENV для раннера:
+
+- `PHOTO_TEST_DB_PREPARE=drop|reset|none` (default: `drop`).
+- `PHOTO_TEST_CASE_TOTALS=10,15` (матриця totals).
+- `PHOTO_TEST_OLD_POOL_SIZE=100` (розмір old seed).
+- `PHOTO_TEST_SOURCE_FILE=/path/to/file.csv` (щоб не качати remote CSV).
+- `PHOTO_TEST_HTTP_MODE=direct|proxy|mixed` (режим для photo stage).
 
 Контроль кількості лотів у бойовому ingest (без локальних файлів):
 
@@ -408,12 +441,6 @@ docker compose run --rm \
   -e PROXY_PREFLIGHT_TOP_N=300 \
   -e PROXY_PREFLIGHT_MIN_WORKING=250 \
   app node dist/index.js photo:cluster
-```
-
-Альтернатива через `make`:
-
-```bash
-PHOTO_WORKER_TOTAL=12 PHOTO_FETCH_CONCURRENCY=150 PROXY_AUTO_SELECT_FOR_PHOTO=true PROXY_MAX_ROUTES_PER_REQUEST=5 PROXY_PREFLIGHT_TOP_N=300 PROXY_PREFLIGHT_MIN_WORKING=250 make photo-cluster
 ```
 
 Гарантія без дублювання лотів між воркерами:

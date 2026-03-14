@@ -605,14 +605,6 @@ export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandi
       WHERE
         l.image_url IS NOT NULL
         AND MOD(CRC32(CAST(l.lot_number AS CHAR)), ?) = ?
-        AND NOT EXISTS (
-          SELECT 1
-          FROM \`${env.mysql.databaseMedia}\`.\`lot_images\` li
-          WHERE li.lot_number = l.lot_number
-            AND li.check_status = 'ok'
-            AND li.is_full_size = 1
-            AND li.variant = 'hd'
-        )
         AND (
           l.photo_status = 'unknown'
           OR (
@@ -620,6 +612,14 @@ export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandi
             AND (
               l.next_photo_retry_at IS NULL
               OR l.next_photo_retry_at <= CURRENT_TIMESTAMP(3)
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+              WHERE li.lot_number = l.lot_number
+                AND li.check_status = 'ok'
+                AND li.is_full_size = 1
+                AND li.variant = 'hd'
             )
           )
         )

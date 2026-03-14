@@ -11,6 +11,23 @@ interface MigrationRow extends RowDataPacket {
 
 const MIGRATIONS_DIR = path.resolve(process.cwd(), "sql", "migrations");
 
+function renderMigrationSql(sql: string): string {
+  const rendered = sql
+    .split("{{CORE_DB}}")
+    .join(env.mysql.databaseCore)
+    .split("{{MEDIA_DB}}")
+    .join(env.mysql.databaseMedia);
+
+  const unresolvedPlaceholders = rendered.match(/\{\{[A-Z_]+\}\}/g);
+  if (unresolvedPlaceholders && unresolvedPlaceholders.length > 0) {
+    throw new Error(
+      `Migration contains unresolved placeholders: ${Array.from(new Set(unresolvedPlaceholders)).join(", ")}`
+    );
+  }
+
+  return rendered;
+}
+
 export async function runMigrations(): Promise<void> {
   const pool = getPool();
 
@@ -54,21 +71,19 @@ export async function runMigrations(): Promise<void> {
     }
 
     const fullPath = path.join(MIGRATIONS_DIR, file);
-    const sql = await fs.readFile(fullPath, "utf8");
+    const rawSql = await fs.readFile(fullPath, "utf8");
+    const sql = renderMigrationSql(rawSql);
 
     logger.info("Applying migration", { file });
 
     const connection = await pool.getConnection();
     try {
-      await connection.beginTransaction();
       await connection.query(sql);
       await connection.query<ResultSetHeader>(
         `INSERT INTO \`${env.mysql.databaseCore}\`.\`schema_migrations\` (file_name) VALUES (?)`,
         [file]
       );
-      await connection.commit();
     } catch (error) {
-      await connection.rollback();
       throw error;
     } finally {
       connection.release();

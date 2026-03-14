@@ -56,4 +56,4 @@ FLUSH PRIVILEGES;
 echo "[db-drop] Dropping and recreating databases..."
 docker compose exec -T mysql mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" -e "${SQL}"
 
-echo "[db-drop] Done. Run migrations next: make migrate"
+echo "[db-drop] Done. Run migrations next: npm run db:migrate"

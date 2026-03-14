@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS `copart_core`.`schema_migrations` (
+CREATE TABLE IF NOT EXISTS `{{CORE_DB}}`.`schema_migrations` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `file_name` VARCHAR(255) NOT NULL,
   `applied_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS `copart_core`.`schema_migrations` (
   UNIQUE KEY `uq_file_name` (`file_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `copart_core`.`ingest_runs` (
+CREATE TABLE IF NOT EXISTS `{{CORE_DB}}`.`ingest_runs` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `run_type` VARCHAR(32) NOT NULL DEFAULT 'csv_ingest',
   `status` ENUM('running', 'success', 'failed') NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS `copart_core`.`ingest_runs` (
   KEY `idx_status_started_at` (`status`, `started_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `copart_core`.`lots` (
+CREATE TABLE IF NOT EXISTS `{{CORE_DB}}`.`lots` (
   `lot_number` BIGINT UNSIGNED NOT NULL,
   `yard_number` INT UNSIGNED DEFAULT NULL,
   `image_url` VARCHAR(1024) DEFAULT NULL,
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS `copart_core`.`lots` (
   KEY `idx_row_hash` (`row_hash`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `copart_media`.`lot_images` (
+CREATE TABLE IF NOT EXISTS `{{MEDIA_DB}}`.`lot_images` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `lot_number` BIGINT UNSIGNED NOT NULL,
   `sequence` INT UNSIGNED NOT NULL DEFAULT 0,
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS `copart_media`.`lot_images` (
   KEY `idx_check_status` (`check_status`, `last_checked_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `copart_media`.`photo_fetch_attempts` (
+CREATE TABLE IF NOT EXISTS `{{MEDIA_DB}}`.`photo_fetch_attempts` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `lot_number` BIGINT UNSIGNED NOT NULL,
   `url` VARCHAR(1024) DEFAULT NULL,

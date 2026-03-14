@@ -1,4 +1,4 @@
-ALTER TABLE `copart_core`.`lots`
+ALTER TABLE `{{CORE_DB}}`.`lots`
   ADD COLUMN `ingest_run_id` BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER `row_hash`,
   DROP COLUMN `raw_payload`,
   DROP COLUMN `source_last_updated_at`,

@@ -48,8 +48,6 @@ function buildPipelineSuccessMessage(
     photo.mode === "cluster" ? photo.totalEndpoint404Lots : photo.endpoint404Lots;
   const http404Total = photo.mode === "cluster" ? photo.totalHttp404Count : photo.http404Count;
   const imagesUpserted = photo.mode === "cluster" ? photo.totalImagesUpserted : photo.imagesUpserted;
-  const invalidRowsCsvAttached = Boolean(ingest.invalidRowsReport);
-  const invalidRowsDebugCsvAttached = Boolean(ingest.invalidRowsDebugReport);
   const http404CsvAttached = Boolean(photo.http404Report);
 
   const lines = [
@@ -74,12 +72,10 @@ function buildPipelineSuccessMessage(
     `Збережено HD фото: ${formatCount(imagesUpserted)}`,
   ];
 
-  if (invalidRowsCsvAttached || invalidRowsDebugCsvAttached || http404CsvAttached) {
+  if (http404CsvAttached) {
     lines.push(
       "",
       "Файли",
-      `CSV битих рядків: ${invalidRowsCsvAttached ? "додано" : "немає"}`,
-      `CSV битих рядків debug: ${invalidRowsDebugCsvAttached ? "додано" : "немає"}`,
       `CSV HTTP 404: ${http404CsvAttached ? "додано" : "немає"}`
     );
   }
@@ -123,19 +119,12 @@ async function executeFullPipelineOnce(): Promise<void> {
     const ingestResult = await runCsvIngest({
       notifySuccess: false,
       notifyError: false,
-      buildInvalidRowsReport: env.telegram.sendSuccessSummary,
+      buildInvalidRowsReport: false,
     });
     if (!ingestResult.executed || !ingestResult.summary) {
       logger.warn("Pipeline run-once aborted because CSV ingest lock was unavailable");
       return;
     }
-    if (ingestResult.summary.invalidRowsReport) {
-      reportFiles.push(ingestResult.summary.invalidRowsReport);
-    }
-    if (ingestResult.summary.invalidRowsDebugReport) {
-      reportFiles.push(ingestResult.summary.invalidRowsDebugReport);
-    }
-
     const photoResult =
       env.photo.workerTotal > 1
         ? await runPhotoCluster({ build404Report: env.telegram.sendSuccessSummary })

@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { RowDataPacket } from "mysql2";
+import { ResultSetHeader } from "mysql2";
 import env from "../../config/env";
 import { getPool } from "../../db/mysql";
 import { logger } from "../../lib/logger";
@@ -9,40 +9,36 @@ export interface AppLockHandle {
   ownerId: string;
 }
 
-interface LockRow extends RowDataPacket {
-  owner_id: string;
-}
-
 export async function acquireAppLock(lockName: string): Promise<AppLockHandle | null> {
   const pool = getPool();
   const ownerId = crypto.randomUUID();
 
-  await pool.query(
+  const [insertResult] = await pool.query<ResultSetHeader>(
     `
-      INSERT INTO \`${env.mysql.databaseCore}\`.\`app_locks\` (lock_name, owner_id, locked_until)
+      INSERT IGNORE INTO \`${env.mysql.databaseCore}\`.\`app_locks\` (lock_name, owner_id, locked_until)
       VALUES (?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND))
-      ON DUPLICATE KEY UPDATE
-        owner_id = IF(locked_until < CURRENT_TIMESTAMP(3), VALUES(owner_id), owner_id),
-        locked_until = IF(
-          locked_until < CURRENT_TIMESTAMP(3),
-          VALUES(locked_until),
-          locked_until
-        )
     `,
     [lockName, ownerId, env.schedule.runLockTtlSec]
   );
 
-  const [rows] = await pool.query<LockRow[]>(
+  if (insertResult.affectedRows === 1) {
+    return { lockName, ownerId };
+  }
+
+  const [updateResult] = await pool.query<ResultSetHeader>(
     `
-      SELECT owner_id
-      FROM \`${env.mysql.databaseCore}\`.\`app_locks\`
-      WHERE lock_name = ?
-      LIMIT 1
+      UPDATE \`${env.mysql.databaseCore}\`.\`app_locks\`
+      SET
+        owner_id = ?,
+        locked_until = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND)
+      WHERE
+        lock_name = ?
+        AND locked_until < CURRENT_TIMESTAMP(3)
     `,
-    [lockName]
+    [ownerId, env.schedule.runLockTtlSec, lockName]
   );
 
-  if (rows.length === 0 || rows[0].owner_id !== ownerId) {
+  if (updateResult.affectedRows !== 1) {
     return null;
   }
 
@@ -63,7 +59,7 @@ export async function releaseAppLock(handle: AppLockHandle): Promise<void> {
 
 export async function renewAppLock(handle: AppLockHandle): Promise<void> {
   const pool = getPool();
-  await pool.query(
+  const [result] = await pool.query<ResultSetHeader>(
     `
       UPDATE \`${env.mysql.databaseCore}\`.\`app_locks\`
       SET locked_until = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND)
@@ -71,6 +67,12 @@ export async function renewAppLock(handle: AppLockHandle): Promise<void> {
     `,
     [env.schedule.runLockTtlSec, handle.lockName, handle.ownerId]
   );
+
+  if (result.affectedRows !== 1) {
+    throw new Error(
+      `App lock lost: lock_name=${handle.lockName}, owner_id=${handle.ownerId}`
+    );
+  }
 }
 
 export async function withAppLock<T>(
@@ -84,6 +86,7 @@ export async function withAppLock<T>(
 
   const renewEveryMs = Math.max(1_000, Math.floor((env.schedule.runLockTtlSec * 1_000) / 3));
   let renewInFlight = false;
+  let lockLostError: Error | null = null;
   const timer = setInterval(() => {
     if (renewInFlight) {
       return;
@@ -92,10 +95,12 @@ export async function withAppLock<T>(
     renewInFlight = true;
     void renewAppLock(handle)
       .catch(error => {
-        logger.warn("App lock renewal failed", {
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        lockLostError = lockLostError ?? normalizedError;
+        logger.error("App lock renewal failed", {
           lockName: handle.lockName,
           ownerId: handle.ownerId,
-          message: error instanceof Error ? error.message : String(error),
+          message: normalizedError.message,
         });
       })
       .finally(() => {
@@ -106,7 +111,11 @@ export async function withAppLock<T>(
   timer.unref?.();
 
   try {
-    return await callback();
+    const result = await callback();
+    if (lockLostError) {
+      throw lockLostError;
+    }
+    return result;
   } finally {
     clearInterval(timer);
     await releaseAppLock(handle);

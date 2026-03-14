@@ -40,10 +40,10 @@
 | 2026-03-12 | Proxy preflight + manual check command | Done | Додано preflight перевірку проксі, авто-відбір top-N робочих і команду `proxy:check` |
 | 2026-03-12 | Proxy list file support | Done | Додано `PROXY_LIST_FILE` + файл `proxies.txt` (1 проксі на рядок, `#` коментар) |
 | 2026-03-12 | Dockerized app runtime | Done | Додано `Dockerfile`, `app` service у `docker-compose`, запуск scheduler у контейнері |
-| 2026-03-12 | Ops command layer | Done | Додано `Makefile` (`up/down/migrate/ingest/photo-sync/proxy-check/db-reset/db-drop/clean-run`) |
+| 2026-03-12 | Ops command layer | Done | Додано shell/npm командний шар для `docker compose` і `npm run ...` |
 | 2026-03-12 | Photo cluster command | Done | Додано `photo:cluster` для запуску N воркерів у 1 контейнері з shard-by-worker без дублювань |
 | 2026-03-12 | Fast DB cleanup scripts | Done | Додано `scripts/db-reset.sh` (truncate) і `scripts/db-drop.sh` (drop/recreate) |
-| 2026-03-12 | Reproducible fresh benchmark script | Done | Додано `scripts/fresh-test.sh` + `make fresh-test` (`db-drop -> migrate -> ingest -> photo:cluster -> SQL summary`) |
+| 2026-03-12 | Reproducible fresh benchmark script | Done | Додано `scripts/fresh-test.sh` (`db-drop -> migrate -> ingest -> photo:cluster -> SQL summary`) |
 | 2026-03-12 | Auto proxy selection for photo cluster | Done | `photo:cluster` може взяти 1 реальний photo URL з БД, прогнати preflight по ньому і передати воркерам тільки top-N проксі |
 | 2026-03-12 | HD-only + URL-hash cache + error-only attempts | Done | Фото-пайплайн перевіряє/зберігає тільки `hd`, пропускає повторний GET при cache-hit (`ok/full_size/url_hash`), у `photo_fetch_attempts` пишуться лише 404/error |
 | 2026-03-13 | Snapshot-core + persistent-media selection | Done | `copart_core.lots` став snapshot поточного CSV, `copart_media` не чиститься, `photo:sync` бере тільки лоти без валідних фото в media |
@@ -57,6 +57,8 @@
 | 2026-03-12 | Redirect hardening | Done | Нормалізація `inventoryv2` в `https`, ручний fallback-follow `3xx`, preflight fallback `HEAD->GET` при помилці HEAD |
 | 2026-03-13 | CSV source cache-bust | Done | Remote CSV запитується з `_ts` query-param + `no-cache` headers; у логах видно `cf-cache-status/etag/last-modified` |
 | 2026-03-13 | Tolerant CSV line parser | Done | `ingest` більше не валиться на неекранованих `"` всередині quoted field; битий рядок не знищує весь хвіст CSV |
+| 2026-03-14 | Photo update matrix test suite | Done | Додано `npm run test:photo-update`: реальний CSV -> генерація old/new/mix CSV -> `ingest+photo:sync` -> SQL PASS/FAIL checks |
+| 2026-03-14 | Cleanup shell wrappers | Done | Видалено `Makefile` і legacy `copart_limit_test.js`; залишено основну логіку + npm/scripts |
 
 ## Що протестовано
 
@@ -85,9 +87,9 @@
 | 2026-03-12 | `npm run build` після Docker/diagnostics змін | Passed | TypeScript компіляція без помилок |
 | 2026-03-12 | `docker compose build app` | Passed | App image збирається успішно після Dockerfile змін |
 | 2026-03-12 | `docker compose up -d mysql app` | Passed | `copart-mysql` + `copart-parser` стартують, scheduler лог присутній |
-| 2026-03-12 | `make db-reset` | Passed | Швидке очищення runtime-таблиць працює |
-| 2026-03-12 | `make db-drop && make migrate` | Passed | Повний drop/recreate і повторна міграція БД працюють |
-| 2026-03-12 | `make proxy-check` | Passed | Команда керування з контейнера працює коректно |
+| 2026-03-12 | `npm run db:reset` | Passed | Швидке очищення runtime-таблиць працює |
+| 2026-03-12 | `npm run db:drop && npm run db:migrate` | Passed | Повний drop/recreate і повторна міграція БД працюють |
+| 2026-03-12 | `npm run proxy:check` | Passed | Команда керування з контейнера працює коректно |
 | 2026-03-12 | `npm run build` після redirect hardening | Passed | TypeScript компіляція успішна |
 | 2026-03-12 | `bash -n scripts/fresh-test.sh` | Passed | Синтаксис нового сценарію clean benchmark валідний |
 | 2026-03-13 | `CSV_LOCAL_FILE=/tmp/copart_small_a.csv INGEST_MAX_ROWS=0 npm run ingest:csv` | Passed | Snapshot ingest зберіг тільки поточний CSV у core, media не чистилась |
@@ -96,6 +98,8 @@
 | 2026-03-13 | Server benchmark: `fresh-test` (`12 workers`, `150 concurrency`, `top-300 proxies`) | Passed | `photo_cluster_runs`: `1000 lots / 11.63s`, `lots_ok=697`, `lots_missing=303`, `images_upserted=7754`; worker durations `9.30s..11.31s`, всі `12/12` воркерів `success` |
 | 2026-03-13 | HEAD до remote CSV: base vs cache-bust URL | Observed | Базовий URL повернув `cf-cache-status=HIT`, cache-bust URL (`_ts=...`) повернув `MISS`; обидва `200`, отже stale CDN-копія була реально можлива |
 | 2026-03-13 | Full parse of live CSV with tolerant parser | Passed | Поточний live CSV: `171587 valid`, `5 invalid`; старий parser зупинявся після рядка `4108` через `125" SLEEPER CAB` |
+| 2026-03-14 | `PHOTO_TEST_CASE_TOTALS=2 PHOTO_TEST_OLD_POOL_SIZE=20 PHOTO_TEST_DB_PREPARE=reset npm run test:photo-update` | Passed | Реальний CSV + 3 кейси (`0/2`, `1/1`, `2/0`), `3/3 PASS`, SQL-перевірки підтвердили skip old lots і process new lots |
+| 2026-03-14 | `PHOTO_TEST_DB_PREPARE=reset npm run test:photo-update` | Passed | Повна матриця `10/15` (27 кейсів): `27/27 PASS`, seed `100` лотів, old-lots стабільно `oldDueBefore=0` / `oldTouched=0` |
 
 ## В роботі
 

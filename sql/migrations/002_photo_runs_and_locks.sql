@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS `copart_core`.`photo_runs` (
+CREATE TABLE IF NOT EXISTS `{{CORE_DB}}`.`photo_runs` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `status` ENUM('running', 'success', 'failed') NOT NULL,
   `started_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS `copart_core`.`photo_runs` (
   KEY `idx_status_started_at` (`status`, `started_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `copart_core`.`app_locks` (
+CREATE TABLE IF NOT EXISTS `{{CORE_DB}}`.`app_locks` (
   `lock_name` VARCHAR(128) NOT NULL,
   `owner_id` VARCHAR(128) NOT NULL,
   `locked_until` DATETIME(3) NOT NULL,

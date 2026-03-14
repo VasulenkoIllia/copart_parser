@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS `copart_core`.`invalid_csv_rows` (
+CREATE TABLE IF NOT EXISTS `{{CORE_DB}}`.`invalid_csv_rows` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `ingest_run_id` BIGINT UNSIGNED NOT NULL,
   `source` VARCHAR(32) NOT NULL,
