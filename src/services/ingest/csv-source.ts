@@ -79,11 +79,16 @@ export interface ParsedCsvRow {
   line: number | null;
 }
 
+interface CsvLineParseResult {
+  fields: string[];
+  endedInQuotedField: boolean;
+}
+
 function stripBom(value: string): string {
   return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
 }
 
-function parseCsvLine(line: string): string[] {
+function parseCsvLineDetailed(line: string): CsvLineParseResult {
   const fields: string[] = [];
   let current = "";
   let inQuotedField = false;
@@ -129,7 +134,14 @@ function parseCsvLine(line: string): string[] {
   }
 
   fields.push(current);
-  return fields;
+  return {
+    fields,
+    endedInQuotedField: inQuotedField,
+  };
+}
+
+function parseCsvLine(line: string): string[] {
+  return parseCsvLineDetailed(line).fields;
 }
 
 function tryRepairMalformedLine(line: string, expectedColumns: number): string | null {
@@ -165,6 +177,8 @@ export async function* iterateCsvRows(
   let skipped = 0;
   let lineNumber = 0;
   let headers: string[] | null = null;
+  let pendingLine: string | null = null;
+  let pendingStartLine: number | null = null;
   const reader = readline.createInterface({
     input: stream,
     crlfDelay: Infinity,
@@ -172,12 +186,30 @@ export async function* iterateCsvRows(
 
   for await (const rawLine of reader) {
     lineNumber += 1;
-    const line = lineNumber === 1 ? stripBom(rawLine) : rawLine;
-    if (!line.trim()) {
+    const normalizedLine = lineNumber === 1 ? stripBom(rawLine) : rawLine;
+    if (!normalizedLine.trim() && pendingLine === null) {
       continue;
     }
 
-    let values = parseCsvLine(line);
+    let line = normalizedLine;
+    let logicalLineNumber = lineNumber;
+    if (pendingLine !== null) {
+      line = `${pendingLine}\n${normalizedLine}`;
+      logicalLineNumber = pendingStartLine ?? lineNumber;
+    }
+
+    let parsed = parseCsvLineDetailed(line);
+
+    if (parsed.endedInQuotedField) {
+      pendingLine = line;
+      pendingStartLine = logicalLineNumber;
+      continue;
+    }
+
+    pendingLine = null;
+    pendingStartLine = null;
+
+    let values = parsed.fields;
     if (!headers) {
       headers = values.map(value => value.trim());
       continue;
@@ -187,9 +219,10 @@ export async function* iterateCsvRows(
       const actualBeforeRepair = values.length;
       const repairedLine = tryRepairMalformedLine(line, headers.length);
       if (repairedLine) {
-        values = parseCsvLine(repairedLine);
+        parsed = parseCsvLineDetailed(repairedLine);
+        values = parsed.fields;
         logger.warn("CSV row repaired after parse mismatch", {
-          line: lineNumber,
+          line: logicalLineNumber,
           expected: headers.length,
           actualBeforeRepair,
           actualAfterRepair: values.length,
@@ -197,19 +230,19 @@ export async function* iterateCsvRows(
         yield {
           record: buildRecord(headers, values),
           raw: repairedLine,
-          line: lineNumber,
+          line: logicalLineNumber,
         };
         continue;
       }
 
       skipped += 1;
       const message = `csv_column_count_mismatch expected=${headers.length} actual=${values.length}`;
-      onSkipRecord?.({ message, line: lineNumber, raw: line });
+      onSkipRecord?.({ message, line: logicalLineNumber, raw: line });
 
       if (skipped <= env.csv.skipLogLimit) {
         logger.warn("CSV row skipped due to parse error", {
           skipped,
-          line: lineNumber,
+          line: logicalLineNumber,
           message,
         });
       } else if (skipped === env.csv.skipLogLimit + 1) {
@@ -224,7 +257,18 @@ export async function* iterateCsvRows(
     yield {
       record: buildRecord(headers, values),
       raw: line,
-      line: lineNumber,
+      line: logicalLineNumber,
     };
+  }
+
+  if (pendingLine !== null) {
+    skipped += 1;
+    const message = "csv_unterminated_quoted_field";
+    onSkipRecord?.({ message, line: pendingStartLine, raw: pendingLine });
+    logger.warn("CSV row skipped due to unterminated quoted field", {
+      skipped,
+      line: pendingStartLine,
+      message,
+    });
   }
 }
