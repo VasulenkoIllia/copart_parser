@@ -15,6 +15,8 @@ export interface IngestCounters {
   rowsInvalid: number;
   rowsInserted: number;
   rowsUpdated: number;
+  rowsUpdatedImageUrlChanged: number;
+  rowsUpdatedOtherFields: number;
   rowsUnchanged: number;
 }
 
@@ -26,6 +28,8 @@ export interface CsvIngestRunSummary {
   rowsInvalid: number;
   rowsInserted: number;
   rowsUpdated: number;
+  rowsUpdatedImageUrlChanged: number;
+  rowsUpdatedOtherFields: number;
   rowsUnchanged: number;
   hydratedLotsFromMedia: number;
   prunedLots: number;
@@ -44,5 +48,7 @@ export interface CsvIngestExecutionResult {
 export interface UpsertBatchResult {
   inserted: number;
   updated: number;
+  updatedImageUrlChanged: number;
+  updatedOtherFields: number;
   unchanged: number;
 }

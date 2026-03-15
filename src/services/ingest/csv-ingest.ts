@@ -45,6 +45,8 @@ function createCounters(): IngestCounters {
     rowsInvalid: 0,
     rowsInserted: 0,
     rowsUpdated: 0,
+    rowsUpdatedImageUrlChanged: 0,
+    rowsUpdatedOtherFields: 0,
     rowsUnchanged: 0,
   };
 }
@@ -72,6 +74,8 @@ async function flushBatch(
     const result = await upsertLotsBatch(currentChunk, runId, seenAt);
     counters.rowsInserted += result.inserted;
     counters.rowsUpdated += result.updated;
+    counters.rowsUpdatedImageUrlChanged += result.updatedImageUrlChanged;
+    counters.rowsUpdatedOtherFields += result.updatedOtherFields;
     counters.rowsUnchanged += result.unchanged;
   }
 }
@@ -181,6 +185,8 @@ async function executeCsvIngest(
           rowsInvalid: counters.rowsInvalid,
           rowsInserted: counters.rowsInserted,
           rowsUpdated: counters.rowsUpdated,
+          rowsUpdatedImageUrlChanged: counters.rowsUpdatedImageUrlChanged,
+          rowsUpdatedOtherFields: counters.rowsUpdatedOtherFields,
           rowsUnchanged: counters.rowsUnchanged,
           elapsedSec,
           rowsPerSec: Number((counters.rowsTotal / elapsedSec).toFixed(2)),
@@ -246,6 +252,8 @@ async function executeCsvIngest(
       rowsInvalid: counters.rowsInvalid,
       rowsInserted: counters.rowsInserted,
       rowsUpdated: counters.rowsUpdated,
+      rowsUpdatedImageUrlChanged: counters.rowsUpdatedImageUrlChanged,
+      rowsUpdatedOtherFields: counters.rowsUpdatedOtherFields,
       rowsUnchanged: counters.rowsUnchanged,
       hydratedLotsFromMedia: hydratedLots,
       prunedLots,
@@ -263,6 +271,8 @@ async function executeCsvIngest(
       rowsInvalid: counters.rowsInvalid,
       rowsInserted: counters.rowsInserted,
       rowsUpdated: counters.rowsUpdated,
+      rowsUpdatedImageUrlChanged: counters.rowsUpdatedImageUrlChanged,
+      rowsUpdatedOtherFields: counters.rowsUpdatedOtherFields,
       rowsUnchanged: counters.rowsUnchanged,
       hydratedLotsFromMedia: hydratedLots,
       prunedLots,
@@ -282,6 +292,8 @@ async function executeCsvIngest(
           `rows_invalid=${counters.rowsInvalid}`,
           `rows_inserted=${counters.rowsInserted}`,
           `rows_updated=${counters.rowsUpdated}`,
+          `rows_updated_image_url_changed=${counters.rowsUpdatedImageUrlChanged}`,
+          `rows_updated_other_fields=${counters.rowsUpdatedOtherFields}`,
           `rows_unchanged=${counters.rowsUnchanged}`,
           `hydrated_lots_from_media=${hydratedLots}`,
           `pruned_lots=${prunedLots}`,

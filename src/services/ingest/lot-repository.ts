@@ -6,6 +6,7 @@ import { IngestCandidate, IngestCounters, UpsertBatchResult } from "./types";
 interface ExistingLotHashRow extends RowDataPacket {
   lot_number: number;
   row_hash: string;
+  image_url: string | null;
 }
 
 export async function createIngestRun(sourceUrl: string): Promise<number> {
@@ -43,7 +44,9 @@ export async function completeIngestRunSuccess(
         meta_json = JSON_OBJECT(
           'batchSize', ?,
           'upsertChunk', ?,
-          'sourceUrl', ?
+          'sourceUrl', ?,
+          'rowsUpdatedImageUrlChanged', ?,
+          'rowsUpdatedOtherFields', ?
         )
       WHERE id = ?
     `,
@@ -57,6 +60,8 @@ export async function completeIngestRunSuccess(
       env.ingest.batchSize,
       env.ingest.upsertChunk,
       sanitizeSource(sourceUrl),
+      counters.rowsUpdatedImageUrlChanged,
+      counters.rowsUpdatedOtherFields,
       runId,
     ]
   );
@@ -114,7 +119,13 @@ export async function upsertLotsBatch(
   seenAt: Date
 ): Promise<UpsertBatchResult> {
   if (batch.length === 0) {
-    return { inserted: 0, updated: 0, unchanged: 0 };
+    return {
+      inserted: 0,
+      updated: 0,
+      updatedImageUrlChanged: 0,
+      updatedOtherFields: 0,
+      unchanged: 0,
+    };
   }
 
   const deduped = new Map<number, IngestCandidate>();
@@ -129,7 +140,7 @@ export async function upsertLotsBatch(
 
   const [existingRows] = await pool.query<ExistingLotHashRow[]>(
     `
-      SELECT lot_number, row_hash
+      SELECT lot_number, row_hash, image_url
       FROM \`${env.mysql.databaseCore}\`.\`lots\`
       WHERE lot_number IN (${placeholders})
     `,
@@ -137,12 +148,16 @@ export async function upsertLotsBatch(
   );
 
   const existingMap = new Map<number, string>();
+  const existingImageUrlMap = new Map<number, string | null>();
   for (const row of existingRows) {
     existingMap.set(Number(row.lot_number), row.row_hash);
+    existingImageUrlMap.set(Number(row.lot_number), row.image_url === null ? null : String(row.image_url));
   }
 
   let inserted = 0;
   let updated = 0;
+  let updatedImageUrlChanged = 0;
+  let updatedOtherFields = 0;
   let unchanged = 0;
 
   for (const item of normalizedBatch) {
@@ -153,6 +168,13 @@ export async function upsertLotsBatch(
       unchanged += 1;
     } else {
       updated += 1;
+      const previousImageUrl = existingImageUrlMap.get(item.lotNumber) ?? null;
+      const nextImageUrl = item.imageUrl ?? null;
+      if (previousImageUrl !== nextImageUrl) {
+        updatedImageUrlChanged += 1;
+      } else {
+        updatedOtherFields += 1;
+      }
     }
   }
 
@@ -214,7 +236,13 @@ export async function upsertLotsBatch(
     params
   );
 
-  return { inserted, updated, unchanged };
+  return {
+    inserted,
+    updated,
+    updatedImageUrlChanged,
+    updatedOtherFields,
+    unchanged,
+  };
 }
 
 export async function pruneMissingLots(runId: number): Promise<number> {

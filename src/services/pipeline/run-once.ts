@@ -38,7 +38,7 @@ function buildPipelineSuccessMessage(
   photo: PhotoSyncRunSummary | PhotoClusterRunResult,
   totalDurationMs: number
 ): string {
-  const configuredParallelRequests = env.photo.fetchConcurrency * env.photo.workerTotal;
+  const photoScanned = photo.mode === "cluster" ? photo.totalLotsScanned : photo.lotsScanned;
   const photoProcessed = photo.mode === "cluster" ? photo.totalLotsProcessed : photo.lotsProcessed;
   const photoLinksProcessed =
     photo.mode === "cluster" ? photo.totalPhotoLinksProcessed : photo.photoLinksProcessed;
@@ -47,7 +47,6 @@ function buildPipelineSuccessMessage(
   const endpoint404Lots =
     photo.mode === "cluster" ? photo.totalEndpoint404Lots : photo.endpoint404Lots;
   const http404Total = photo.mode === "cluster" ? photo.totalHttp404Count : photo.http404Count;
-  const imagesUpserted = photo.mode === "cluster" ? photo.totalImagesUpserted : photo.imagesUpserted;
   const http404CsvAttached = Boolean(photo.http404Report);
 
   const lines = [
@@ -56,49 +55,26 @@ function buildPipelineSuccessMessage(
     "CSV",
     `Лотів у CSV: ${formatCount(ingest.rowsValid)}`,
     `Нових лотів: ${formatCount(ingest.rowsInserted)}`,
-    `Оновлених лотів: ${formatCount(ingest.rowsUpdated)}`,
+    `Оновлено зі зміною image_url: ${formatCount(ingest.rowsUpdatedImageUrlChanged)}`,
     `Без змін: ${formatCount(ingest.rowsUnchanged)}`,
     `Некоректних рядків: ${formatCount(ingest.rowsInvalid)}`,
     `Видалено зі snapshot: ${formatCount(ingest.prunedLots)}`,
-    `Одразу закрито з media: ${formatCount(ingest.hydratedLotsFromMedia)}`,
     "",
     "Фото",
+    `Кандидатів на photo-stage: ${formatCount(photoScanned)}`,
     `Опрацьовано лотів: ${formatCount(photoProcessed)}`,
     `Опрацьовано фото-посилань: ${formatCount(photoLinksProcessed)}`,
     `З валідними фото: ${formatCount(photoOk)} (${formatPercent(photoOk, photoProcessed)})`,
     `Без валідних фото: ${formatCount(photoMissing)} (${formatPercent(photoMissing, photoProcessed)})`,
     `Лотів з endpoint 404: ${formatCount(endpoint404Lots)}`,
     `Усього HTTP 404: ${formatCount(http404Total)}`,
-    `Збережено HD фото: ${formatCount(imagesUpserted)}`,
   ];
 
-  if (http404CsvAttached) {
-    lines.push(
-      "",
-      "Файли",
-      `CSV HTTP 404: ${http404CsvAttached ? "додано" : "немає"}`
-    );
-  }
-
-  if (photo.mode === "cluster") {
-    lines.push(
-      "",
-      "Кластер",
-      `Воркерів: ${formatCount(photo.workerTotal)}`,
-      `Fetch concurrency/воркер: ${formatCount(env.photo.fetchConcurrency)}`,
-      `Теор. max паралельних HTTP-запитів: ${formatCount(configuredParallelRequests)}`,
-      `Успішних: ${formatCount(photo.workersSucceeded)}`,
-      `З помилками: ${formatCount(photo.workersFailed)}`
-    );
-  } else {
-    lines.push(
-      "",
-      "Воркер",
-      `${photo.workerIndex + 1} з ${photo.workerTotal}`,
-      `Fetch concurrency: ${formatCount(env.photo.fetchConcurrency)}`,
-      `Теор. max паралельних HTTP-запитів: ${formatCount(configuredParallelRequests)}`
-    );
-  }
+  lines.push(
+    "",
+    "Файли",
+    `CSV HTTP 404: ${http404CsvAttached ? "додано" : "немає"}`
+  );
 
   lines.push(
     "",
