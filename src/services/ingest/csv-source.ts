@@ -132,6 +132,23 @@ function parseCsvLine(line: string): string[] {
   return fields;
 }
 
+function tryRepairMalformedLine(line: string, expectedColumns: number): string | null {
+  // Copart occasionally sends an extra quote right before delimiter:
+  // ...,"SUMMIT 850 X 165"","","BLUE",...
+  // We can safely collapse this pattern only when it is not an empty field.
+  const repaired = line.replace(/(?<=[^,])""(?=,")/g, "\"");
+  if (repaired === line) {
+    return null;
+  }
+
+  const repairedValues = parseCsvLine(repaired);
+  if (repairedValues.length !== expectedColumns) {
+    return null;
+  }
+
+  return repaired;
+}
+
 function buildRecord(headers: string[], values: string[]): CsvRecord {
   const normalized: CsvRecord = {};
   for (let index = 0; index < headers.length; index += 1) {
@@ -160,13 +177,31 @@ export async function* iterateCsvRows(
       continue;
     }
 
-    const values = parseCsvLine(line);
+    let values = parseCsvLine(line);
     if (!headers) {
       headers = values.map(value => value.trim());
       continue;
     }
 
     if (values.length !== headers.length) {
+      const actualBeforeRepair = values.length;
+      const repairedLine = tryRepairMalformedLine(line, headers.length);
+      if (repairedLine) {
+        values = parseCsvLine(repairedLine);
+        logger.warn("CSV row repaired after parse mismatch", {
+          line: lineNumber,
+          expected: headers.length,
+          actualBeforeRepair,
+          actualAfterRepair: values.length,
+        });
+        yield {
+          record: buildRecord(headers, values),
+          raw: repairedLine,
+          line: lineNumber,
+        };
+        continue;
+      }
+
       skipped += 1;
       const message = `csv_column_count_mismatch expected=${headers.length} actual=${values.length}`;
       onSkipRecord?.({ message, line: lineNumber, raw: line });
