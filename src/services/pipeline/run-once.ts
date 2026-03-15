@@ -55,6 +55,7 @@ function buildPipelineSuccessMessage(
     "CSV",
     `Лотів у CSV: ${formatCount(ingest.rowsValid)}`,
     `Нових лотів: ${formatCount(ingest.rowsInserted)}`,
+    `Оновлених лотів: ${formatCount(ingest.rowsUpdated)}`,
     `Оновлено зі зміною image_url: ${formatCount(ingest.rowsUpdatedImageUrlChanged)}`,
     `Некоректних рядків: ${formatCount(ingest.rowsInvalid)}`,
     `Видалено зі snapshot: ${formatCount(ingest.prunedLots)}`,

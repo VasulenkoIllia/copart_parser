@@ -3,6 +3,12 @@ import { hashObject } from "../../lib/hash";
 import { normalizeCopartLotImagesUrl } from "../../lib/url-utils";
 import { CsvRecord, IngestCandidate } from "./types";
 
+const HASH_EXCLUDED_FIELDS = new Set([
+  "last updated time",
+  "last_updated_time",
+  "lastupdatedtime",
+]);
+
 function pickFirst(record: CsvRecord, keys: string[]): string {
   for (const key of keys) {
     const value = record[key];
@@ -29,6 +35,18 @@ function normalizeRecord(record: Record<string, unknown>): CsvRecord {
   return normalized;
 }
 
+function buildHashPayload(record: CsvRecord): CsvRecord {
+  const payload: CsvRecord = {};
+  for (const [key, value] of Object.entries(record)) {
+    const normalizedKey = key.trim().toLowerCase();
+    if (HASH_EXCLUDED_FIELDS.has(normalizedKey)) {
+      continue;
+    }
+    payload[key] = value;
+  }
+  return payload;
+}
+
 export function mapCsvRow(record: Record<string, unknown>): IngestCandidate | null {
   const normalized = normalizeRecord(record);
 
@@ -46,6 +64,7 @@ export function mapCsvRow(record: Record<string, unknown>): IngestCandidate | nu
   const yardNumberRaw = pickFirst(normalized, ["Yard number", "yard_number", "yard number"]);
   const imageUrlRaw = pickFirst(normalized, ["Image URL", "imageurl", "image_url"]);
   const yardNumber = parseOptionalInt(yardNumberRaw);
+  const hashPayload = buildHashPayload(normalized);
 
   return {
     lotNumber,
@@ -57,6 +76,6 @@ export function mapCsvRow(record: Record<string, unknown>): IngestCandidate | nu
       yardNumber,
       defaultYardNumber: 1,
     }),
-    rowHash: hashObject(normalized, env.ingest.rowHashAlgo),
+    rowHash: hashObject(hashPayload, env.ingest.rowHashAlgo),
   };
 }
