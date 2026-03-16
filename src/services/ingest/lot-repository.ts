@@ -1,13 +1,35 @@
 import { ResultSetHeader, RowDataPacket } from "mysql2";
 import env from "../../config/env";
 import { getPool } from "../../db/mysql";
-import { IngestCandidate, IngestCounters, UpsertBatchResult } from "./types";
+import { CsvFieldUpdateStat, CsvRecord, IngestCandidate, IngestCounters, UpsertBatchResult } from "./types";
 
 interface ExistingLotHashRow extends RowDataPacket {
   lot_number: number;
   row_hash: string;
   image_url: string | null;
+  csv_payload: unknown;
 }
+
+interface ExistingLotSnapshot {
+  rowHash: string;
+  imageUrl: string | null;
+  csvPayload: CsvRecord;
+}
+
+interface ColumnNameRow extends RowDataPacket {
+  column_name: string;
+}
+
+interface CsvFieldColumnMapping {
+  field: string;
+  column: string;
+}
+
+interface EnsureCsvColumnsResult {
+  mappings: CsvFieldColumnMapping[];
+}
+
+let lotsColumnsCache: Set<string> | null = null;
 
 export async function createIngestRun(sourceUrl: string): Promise<number> {
   const pool = getPool();
@@ -113,6 +135,203 @@ function sanitizeSource(source: string): string {
   return url.toString();
 }
 
+function normalizeCsvPayload(value: unknown): CsvRecord {
+  if (Buffer.isBuffer(value)) {
+    return parseCsvPayload(value.toString("utf8"));
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const normalized: CsvRecord = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    normalized[String(key)] = item === undefined || item === null ? "" : String(item).trim();
+  }
+  return normalized;
+}
+
+function parseCsvPayload(value: unknown): CsvRecord {
+  if (value === null || value === undefined) {
+    return {};
+  }
+
+  if (typeof value === "string") {
+    try {
+      return normalizeCsvPayload(JSON.parse(value));
+    } catch {
+      return {};
+    }
+  }
+
+  return normalizeCsvPayload(value);
+}
+
+function getChangedFields(previous: CsvRecord, current: CsvRecord): string[] {
+  const keys = new Set<string>([...Object.keys(previous), ...Object.keys(current)]);
+  const changedFields: string[] = [];
+  for (const key of keys) {
+    const previousHasKey = Object.prototype.hasOwnProperty.call(previous, key);
+    const currentHasKey = Object.prototype.hasOwnProperty.call(current, key);
+    const previousValue = previousHasKey ? previous[key] : "";
+    const currentValue = currentHasKey ? current[key] : "";
+    if (previousHasKey !== currentHasKey || previousValue !== currentValue) {
+      changedFields.push(key);
+    }
+  }
+  return changedFields;
+}
+
+function toUpdatedFieldStats(counters: Map<string, number>): CsvFieldUpdateStat[] {
+  return Array.from(counters.entries()).map(([field, lotsUpdated]) => ({
+    field,
+    lotsUpdated,
+  }));
+}
+
+function escapeIdentifier(identifier: string): string {
+  return `\`${identifier.replace(/`/g, "``")}\``;
+}
+
+function csvFieldToColumnName(field: string): string {
+  const base = field
+    .replace(/\u0000/g, "")
+    .replace(/\r?\n/g, " ")
+    .trim();
+  const normalizedBase = base || "field";
+  const column = `csv_${normalizedBase}`;
+  if (column.length > 64) {
+    throw new Error(`CSV header is too long for MySQL column name: "${field}"`);
+  }
+  return column;
+}
+
+function escapeJsonPathField(field: string): string {
+  return field
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/'/g, "\\'");
+}
+
+async function getLotsColumns(): Promise<Set<string>> {
+  if (lotsColumnsCache) {
+    return lotsColumnsCache;
+  }
+
+  const pool = getPool();
+  const [rows] = await pool.query<ColumnNameRow[]>(
+    `
+      SELECT COLUMN_NAME AS column_name
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = 'lots'
+    `,
+    [env.mysql.databaseCore]
+  );
+
+  lotsColumnsCache = new Set(rows.map(row => String(row.column_name)));
+  return lotsColumnsCache;
+}
+
+async function ensureCsvColumnsForBatch(batch: IngestCandidate[]): Promise<EnsureCsvColumnsResult> {
+  const fields = new Set<string>();
+  for (const item of batch) {
+    for (const field of Object.keys(item.csvPayload)) {
+      fields.add(field);
+    }
+  }
+
+  if (fields.size === 0) {
+    return { mappings: [] };
+  }
+
+  const mappings = Array.from(fields).map(field => ({
+    field,
+    column: csvFieldToColumnName(field),
+  }));
+
+  const columnToField = new Map<string, string>();
+  for (const mapping of mappings) {
+    const key = mapping.column.toLowerCase();
+    const existingField = columnToField.get(key);
+    if (existingField && existingField !== mapping.field) {
+      throw new Error(
+        `CSV header collision for column "${mapping.column}": "${existingField}" and "${mapping.field}"`
+      );
+    }
+    columnToField.set(key, mapping.field);
+  }
+
+  const existingColumns = await getLotsColumns();
+  const existingColumnsLookup = new Set(Array.from(existingColumns).map(column => column.toLowerCase()));
+  const missingColumns = mappings.filter(mapping => !existingColumnsLookup.has(mapping.column.toLowerCase()));
+  if (missingColumns.length > 0) {
+    const pool = getPool();
+    const clauses = missingColumns
+      .map(mapping => `ADD COLUMN ${escapeIdentifier(mapping.column)} TEXT NULL`)
+      .join(",\n  ");
+
+    await pool.query(
+      `
+        ALTER TABLE \`${env.mysql.databaseCore}\`.\`lots\`
+        ${clauses}
+      `
+    );
+
+    for (const mapping of missingColumns) {
+      existingColumns.add(mapping.column);
+      existingColumnsLookup.add(mapping.column.toLowerCase());
+    }
+    lotsColumnsCache = existingColumns;
+
+    const setClauses = missingColumns
+      .map(
+        mapping =>
+          `${escapeIdentifier(mapping.column)} = JSON_UNQUOTE(JSON_EXTRACT(csv_payload, '$."${escapeJsonPathField(mapping.field)}"'))`
+      )
+      .join(",\n          ");
+
+    if (setClauses) {
+      await pool.query(
+        `
+          UPDATE \`${env.mysql.databaseCore}\`.\`lots\`
+          SET
+            ${setClauses}
+        `
+      );
+    }
+  }
+
+  return { mappings };
+}
+
+async function stageLotNumbers(lotNumbers: number[], seenAt: Date): Promise<void> {
+  if (lotNumbers.length === 0) {
+    return;
+  }
+
+  const pool = getPool();
+  const placeholders: string[] = [];
+  const params: Array<number | Date> = [];
+  for (const lotNumber of lotNumbers) {
+    placeholders.push("(?, ?)");
+    params.push(lotNumber, seenAt);
+  }
+
+  await pool.query(
+    `
+      INSERT INTO \`${env.mysql.databaseCore}\`.\`ingest_lot_stage\` (
+        lot_number,
+        seen_at
+      )
+      VALUES ${placeholders.join(", ")}
+      ON DUPLICATE KEY UPDATE
+        seen_at = VALUES(seen_at)
+    `,
+    params
+  );
+}
+
 export async function upsertLotsBatch(
   batch: IngestCandidate[],
   runId: number,
@@ -125,6 +344,7 @@ export async function upsertLotsBatch(
       updatedImageUrlChanged: 0,
       updatedOtherFields: 0,
       unchanged: 0,
+      updatedFields: [],
     };
   }
 
@@ -133,25 +353,29 @@ export async function upsertLotsBatch(
     deduped.set(item.lotNumber, item);
   }
   const normalizedBatch = Array.from(deduped.values());
+  const { mappings: csvFieldColumns } = await ensureCsvColumnsForBatch(normalizedBatch);
 
   const pool = getPool();
   const lotNumbers = normalizedBatch.map(item => item.lotNumber);
+  await stageLotNumbers(lotNumbers, seenAt);
   const placeholders = lotNumbers.map(() => "?").join(", ");
 
   const [existingRows] = await pool.query<ExistingLotHashRow[]>(
     `
-      SELECT lot_number, row_hash, image_url
+      SELECT lot_number, row_hash, image_url, csv_payload
       FROM \`${env.mysql.databaseCore}\`.\`lots\`
       WHERE lot_number IN (${placeholders})
     `,
     lotNumbers
   );
 
-  const existingMap = new Map<number, string>();
-  const existingImageUrlMap = new Map<number, string | null>();
+  const existingMap = new Map<number, ExistingLotSnapshot>();
   for (const row of existingRows) {
-    existingMap.set(Number(row.lot_number), row.row_hash);
-    existingImageUrlMap.set(Number(row.lot_number), row.image_url === null ? null : String(row.image_url));
+    existingMap.set(Number(row.lot_number), {
+      rowHash: row.row_hash,
+      imageUrl: row.image_url === null ? null : String(row.image_url),
+      csvPayload: parseCsvPayload(row.csv_payload),
+    });
   }
 
   let inserted = 0;
@@ -159,82 +383,116 @@ export async function upsertLotsBatch(
   let updatedImageUrlChanged = 0;
   let updatedOtherFields = 0;
   let unchanged = 0;
+  const updatedFields = new Map<string, number>();
+  const changedRows: IngestCandidate[] = [];
 
   for (const item of normalizedBatch) {
-    const previousHash = existingMap.get(item.lotNumber);
-    if (!previousHash) {
+    const previous = existingMap.get(item.lotNumber);
+    if (!previous) {
       inserted += 1;
-    } else if (previousHash === item.rowHash) {
-      unchanged += 1;
+      changedRows.push(item);
     } else {
-      updated += 1;
-      const previousImageUrl = existingImageUrlMap.get(item.lotNumber) ?? null;
-      const nextImageUrl = item.imageUrl ?? null;
-      if (previousImageUrl !== nextImageUrl) {
-        updatedImageUrlChanged += 1;
+      const changedFields = getChangedFields(previous.csvPayload, item.csvPayload);
+      const payloadChanged = changedFields.length > 0;
+      const hashChanged = previous.rowHash !== item.rowHash;
+
+      if (!hashChanged && !payloadChanged) {
+        unchanged += 1;
       } else {
-        updatedOtherFields += 1;
+        updated += 1;
+        changedRows.push(item);
+
+        const previousImageUrl = previous.imageUrl;
+        const nextImageUrl = item.imageUrl ?? null;
+        if (previousImageUrl !== nextImageUrl) {
+          updatedImageUrlChanged += 1;
+        } else {
+          updatedOtherFields += 1;
+        }
+
+        for (const field of changedFields) {
+          updatedFields.set(field, (updatedFields.get(field) ?? 0) + 1);
+        }
       }
     }
   }
 
-  const valuePlaceholders: string[] = [];
-  const params: Array<number | string | Date | null> = [];
+  if (changedRows.length > 0) {
+    const insertColumns = [
+      "lot_number",
+      "yard_number",
+      "image_url",
+      "row_hash",
+      "csv_payload",
+      ...csvFieldColumns.map(mapping => mapping.column),
+      "ingest_run_id",
+      "first_seen_at",
+      "last_seen_at",
+    ];
+    const insertColumnsSql = insertColumns.map(column => escapeIdentifier(column)).join(",\n          ");
+    const dynamicUpdateSql = csvFieldColumns
+      .map(mapping => `${escapeIdentifier(mapping.column)} = VALUES(${escapeIdentifier(mapping.column)})`)
+      .join(",\n          ");
 
-  for (const item of normalizedBatch) {
-    valuePlaceholders.push("(?, ?, ?, ?, ?, ?, ?)");
-    params.push(
-      item.lotNumber,
-      item.yardNumber,
-      item.imageUrl,
-      item.rowHash,
-      runId,
-      seenAt,
-      seenAt
+    const valuePlaceholders: string[] = [];
+    const params: Array<number | string | Date | null> = [];
+
+    for (const item of changedRows) {
+      valuePlaceholders.push(`(${new Array(insertColumns.length).fill("?").join(", ")})`);
+      const dynamicValues = csvFieldColumns.map(mapping =>
+        Object.prototype.hasOwnProperty.call(item.csvPayload, mapping.field) ? item.csvPayload[mapping.field] : null
+      );
+      params.push(
+        item.lotNumber,
+        item.yardNumber,
+        item.imageUrl,
+        item.rowHash,
+        JSON.stringify(item.csvPayload),
+        ...dynamicValues,
+        runId,
+        seenAt,
+        seenAt
+      );
+    }
+
+    await pool.query(
+      `
+        INSERT INTO \`${env.mysql.databaseCore}\`.\`lots\` (
+          ${insertColumnsSql}
+        )
+        VALUES ${valuePlaceholders.join(", ")}
+        ON DUPLICATE KEY UPDATE
+          yard_number = VALUES(yard_number),
+          photo_status = IF(
+            COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+            'unknown',
+            photo_status
+          ),
+          photo_404_count = IF(
+            COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+            0,
+            photo_404_count
+          ),
+          photo_404_since = IF(
+            COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+            NULL,
+            photo_404_since
+          ),
+          next_photo_retry_at = IF(
+            COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
+            NULL,
+            next_photo_retry_at
+          ),
+          image_url = VALUES(image_url),
+          row_hash = VALUES(row_hash),
+          csv_payload = VALUES(csv_payload),
+          ${dynamicUpdateSql ? `${dynamicUpdateSql},` : ""}
+          ingest_run_id = VALUES(ingest_run_id),
+          last_seen_at = VALUES(last_seen_at)
+      `,
+      params
     );
   }
-
-  await pool.query(
-    `
-      INSERT INTO \`${env.mysql.databaseCore}\`.\`lots\` (
-        lot_number,
-        yard_number,
-        image_url,
-        row_hash,
-        ingest_run_id,
-        first_seen_at,
-        last_seen_at
-      )
-      VALUES ${valuePlaceholders.join(", ")}
-      ON DUPLICATE KEY UPDATE
-        yard_number = VALUES(yard_number),
-        photo_status = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
-          'unknown',
-          photo_status
-        ),
-        photo_404_count = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
-          0,
-          photo_404_count
-        ),
-        photo_404_since = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
-          NULL,
-          photo_404_since
-        ),
-        next_photo_retry_at = IF(
-          COALESCE(image_url, '') <> COALESCE(VALUES(image_url), ''),
-          NULL,
-          next_photo_retry_at
-        ),
-        image_url = VALUES(image_url),
-        row_hash = VALUES(row_hash),
-        ingest_run_id = VALUES(ingest_run_id),
-        last_seen_at = VALUES(last_seen_at)
-    `,
-    params
-  );
 
   return {
     inserted,
@@ -242,27 +500,37 @@ export async function upsertLotsBatch(
     updatedImageUrlChanged,
     updatedOtherFields,
     unchanged,
+    updatedFields: toUpdatedFieldStats(updatedFields),
   };
 }
 
-export async function pruneMissingLots(runId: number): Promise<number> {
+export async function clearIngestLotStage(): Promise<void> {
+  const pool = getPool();
+  await pool.query(`DELETE FROM \`${env.mysql.databaseCore}\`.\`ingest_lot_stage\``);
+}
+
+export async function pruneMissingLots(): Promise<number> {
   const pool = getPool();
   const [result] = await pool.query<ResultSetHeader>(
     `
-      DELETE FROM \`${env.mysql.databaseCore}\`.\`lots\`
-      WHERE ingest_run_id <> ?
-    `,
-    [runId]
+      DELETE l
+      FROM \`${env.mysql.databaseCore}\`.\`lots\` l
+      LEFT JOIN \`${env.mysql.databaseCore}\`.\`ingest_lot_stage\` s
+        ON s.lot_number = l.lot_number
+      WHERE s.lot_number IS NULL
+    `
   );
   return result.affectedRows;
 }
 
-export async function hydrateInsertedLotsPhotoStatusFromMedia(runId: number): Promise<number> {
+export async function hydrateInsertedLotsPhotoStatusFromMedia(): Promise<number> {
   const pool = getPool();
 
   const [result] = await pool.query<ResultSetHeader>(
     `
       UPDATE \`${env.mysql.databaseCore}\`.\`lots\` l
+      JOIN \`${env.mysql.databaseCore}\`.\`ingest_lot_stage\` s
+        ON s.lot_number = l.lot_number
       JOIN (
         SELECT lot_number, MAX(last_checked_at) AS max_checked_at
         FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
@@ -279,11 +547,9 @@ export async function hydrateInsertedLotsPhotoStatusFromMedia(runId: number): Pr
         l.next_photo_retry_at = NULL,
         l.last_photo_check_at = COALESCE(m.max_checked_at, CURRENT_TIMESTAMP(3))
       WHERE
-        l.ingest_run_id = ?
-        AND l.photo_status = 'unknown'
+        l.photo_status = 'unknown'
         AND l.last_photo_check_at IS NULL
-    `,
-    [runId]
+    `
   );
 
   return result.affectedRows;

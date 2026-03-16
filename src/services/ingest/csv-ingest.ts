@@ -1,6 +1,7 @@
 import { logger } from "../../lib/logger";
 import { buildCsvUrl, downloadCsvStream, iterateCsvRows } from "./csv-source";
 import {
+  clearIngestLotStage,
   completeIngestRunFailure,
   completeIngestRunSuccess,
   createIngestRun,
@@ -9,7 +10,13 @@ import {
   upsertLotsBatch,
 } from "./lot-repository";
 import { mapCsvRow } from "./row-mapper";
-import { CsvIngestExecutionResult, CsvIngestRunSummary, IngestCandidate, IngestCounters } from "./types";
+import {
+  CsvFieldUpdateStat,
+  CsvIngestExecutionResult,
+  CsvIngestRunSummary,
+  IngestCandidate,
+  IngestCounters,
+} from "./types";
 import env from "../../config/env";
 import { withAppLock } from "../locks/db-lock";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
@@ -62,7 +69,8 @@ function chunk<T>(items: T[], size: number): T[][] {
 async function flushBatch(
   batch: IngestCandidate[],
   runId: number,
-  counters: IngestCounters
+  counters: IngestCounters,
+  updatedFieldsCounter: Map<string, number>
 ): Promise<void> {
   if (batch.length === 0) {
     return;
@@ -77,7 +85,52 @@ async function flushBatch(
     counters.rowsUpdatedImageUrlChanged += result.updatedImageUrlChanged;
     counters.rowsUpdatedOtherFields += result.updatedOtherFields;
     counters.rowsUnchanged += result.unchanged;
+    for (const stat of result.updatedFields) {
+      updatedFieldsCounter.set(stat.field, (updatedFieldsCounter.get(stat.field) ?? 0) + stat.lotsUpdated);
+    }
   }
+}
+
+function toSortedFieldStats(counters: Map<string, number>): CsvFieldUpdateStat[] {
+  return Array.from(counters.entries())
+    .map(([field, lotsUpdated]) => ({
+      field,
+      lotsUpdated,
+    }))
+    .sort((a, b) => {
+      if (b.lotsUpdated !== a.lotsUpdated) {
+        return b.lotsUpdated - a.lotsUpdated;
+      }
+      return a.field.localeCompare(b.field);
+    });
+}
+
+function buildUpdatedFieldsTelegramLines(stats: CsvFieldUpdateStat[]): string[] {
+  if (stats.length === 0) {
+    return ["updated_fields=none"];
+  }
+
+  const lines = ["updated_fields_by_lots:"];
+  let currentLength = lines.join("\n").length;
+  let hidden = 0;
+
+  for (const stat of stats) {
+    const line = `${stat.field}=${stat.lotsUpdated}`;
+    const nextLength = currentLength + 1 + line.length;
+    if (nextLength > 3500) {
+      hidden += 1;
+      continue;
+    }
+
+    lines.push(line);
+    currentLength = nextLength;
+  }
+
+  if (hidden > 0) {
+    lines.push(`... +${hidden} fields`);
+  }
+
+  return lines;
 }
 
 function invalidRowsPercent(counters: IngestCounters): number {
@@ -114,6 +167,7 @@ async function executeCsvIngest(
   const startedAt = Date.now();
   const sourceUrl = getSourceDescriptor();
   const counters = createCounters();
+  const updatedFieldsCounter = new Map<string, number>();
   const batch: IngestCandidate[] = [];
   const invalidRows: InvalidCsvRowReportEntry[] = [];
   const maxRows = env.ingest.maxRows;
@@ -136,6 +190,8 @@ async function executeCsvIngest(
   const runId = await createIngestRun(sourceUrl);
 
   try {
+    await clearIngestLotStage();
+
     const stream = await downloadCsvStream();
 
     for await (const row of iterateCsvRows(stream, meta => {
@@ -173,7 +229,7 @@ async function executeCsvIngest(
       batch.push(mapped);
 
       if (batch.length >= env.ingest.batchSize) {
-        await flushBatch(batch, runId, counters);
+        await flushBatch(batch, runId, counters, updatedFieldsCounter);
         batch.length = 0;
       }
 
@@ -204,9 +260,9 @@ async function executeCsvIngest(
       });
     }
 
-    await flushBatch(batch, runId, counters);
+    await flushBatch(batch, runId, counters, updatedFieldsCounter);
 
-    hydratedLots = await hydrateInsertedLotsPhotoStatusFromMedia(runId);
+    hydratedLots = await hydrateInsertedLotsPhotoStatusFromMedia();
 
     const skipPruneForLimitedRun = maxRows > 0 && maxRowsReached;
     if (env.ingest.pruneMissingLots && !skipPruneForLimitedRun) {
@@ -226,12 +282,14 @@ async function executeCsvIngest(
         );
       }
 
-      prunedLots = await pruneMissingLots(runId);
+      prunedLots = await pruneMissingLots();
     } else if (env.ingest.pruneMissingLots && skipPruneForLimitedRun) {
       logger.warn("CSV ingest prune skipped because run used INGEST_MAX_ROWS limit", {
         maxRows,
       });
     }
+
+    const updatedFields = toSortedFieldStats(updatedFieldsCounter);
 
     await completeIngestRunSuccess(runId, counters, sourceUrl);
 
@@ -255,6 +313,7 @@ async function executeCsvIngest(
       rowsUpdatedImageUrlChanged: counters.rowsUpdatedImageUrlChanged,
       rowsUpdatedOtherFields: counters.rowsUpdatedOtherFields,
       rowsUnchanged: counters.rowsUnchanged,
+      updatedFields: updatedFields.length,
       hydratedLotsFromMedia: hydratedLots,
       prunedLots,
       durationMs,
@@ -274,6 +333,7 @@ async function executeCsvIngest(
       rowsUpdatedImageUrlChanged: counters.rowsUpdatedImageUrlChanged,
       rowsUpdatedOtherFields: counters.rowsUpdatedOtherFields,
       rowsUnchanged: counters.rowsUnchanged,
+      updatedFields,
       hydratedLotsFromMedia: hydratedLots,
       prunedLots,
       durationMs,
@@ -295,8 +355,10 @@ async function executeCsvIngest(
           `rows_updated_image_url_changed=${counters.rowsUpdatedImageUrlChanged}`,
           `rows_updated_other_fields=${counters.rowsUpdatedOtherFields}`,
           `rows_unchanged=${counters.rowsUnchanged}`,
+          `updated_fields_total=${updatedFields.length}`,
           `hydrated_lots_from_media=${hydratedLots}`,
           `pruned_lots=${prunedLots}`,
+          ...buildUpdatedFieldsTelegramLines(updatedFields),
         ].join("\n")
       );
       await cleanupReportFiles([invalidRowsReport, invalidRowsDebugReport]);
@@ -316,6 +378,15 @@ async function executeCsvIngest(
       await sendTelegramError("CSV INGEST FAILED", error);
     }
     throw error;
+  } finally {
+    try {
+      await clearIngestLotStage();
+    } catch (error) {
+      logger.warn("Failed to clear ingest_lot_stage after run", {
+        message: error instanceof Error ? error.message : String(error),
+        runId,
+      });
+    }
   }
 }
 

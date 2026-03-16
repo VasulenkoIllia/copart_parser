@@ -247,9 +247,10 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 ### Етап 2. Імпорт CSV (200k+ рядків)
 
 - [x] Стрімінгове читання CSV (без завантаження всього файлу в RAM).
-- [x] Батчевий `INSERT ... ON DUPLICATE KEY UPDATE`.
+- [x] Батчевий `INSERT ... ON DUPLICATE KEY UPDATE` тільки для нових/змінених рядків.
 - [x] Обчислення `row_hash` для виявлення реальних змін.
-- [x] Поля `first_seen_at`, `last_seen_at`, `ingest_run_id` для snapshot-синхронізації.
+- [x] Збереження повного CSV-пейлоаду в `lots.csv_payload`.
+- [x] Stage-таблиця `ingest_lot_stage` для prune по актуальному CSV snapshot.
 
 ### Етап 3. Обробка фото (2M+ URL)
 
@@ -284,10 +285,11 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - Унікальний ключ лота: `lot_number`.
 - При кожному імпорті:
   - якщо лот новий — створити запис;
-  - якщо існує — оновити змінені поля;
-  - якщо не змінювався (`row_hash` однаковий) — пропустити важкі операції.
+  - якщо існує — оновити змінені поля + `csv_payload`;
+  - якщо не змінювався (`row_hash` і `csv_payload` однакові) — пропустити важкі операції.
+- Всі поля CSV також пишуться окремими колонками у `copart_core.lots` (формат імені: `csv_<оригінальна_назва_поля_з_CSV>`).
 - Після завершення ingest:
-  - видалити з `copart_core.lots` лоти, яких не було в поточному CSV (`ingest_run_id <> current_run_id`);
+  - видалити з `copart_core.lots` лоти, яких не було в поточному CSV (`NOT EXISTS` у `ingest_lot_stage`);
 - Для нових лотів ingest може виставити `photo_status=ok`, якщо в `copart_media.lot_images` уже є валідні `hd + full-size` фото.
 
 ### Фото

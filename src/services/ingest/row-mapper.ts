@@ -77,5 +77,6 @@ export function mapCsvRow(record: Record<string, unknown>): IngestCandidate | nu
       defaultYardNumber: 1,
     }),
     rowHash: hashObject(hashPayload, env.ingest.rowHashAlgo),
+    csvPayload: normalized,
   };
 }

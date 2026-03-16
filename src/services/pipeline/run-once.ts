@@ -5,7 +5,7 @@ import { runCsvIngest } from "../ingest/csv-ingest";
 import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { runPhotoSync } from "../photo/photo-sync";
 import { runPhotoCluster } from "../photo/photo-cluster";
-import { CsvIngestRunSummary } from "../ingest/types";
+import { CsvFieldUpdateStat, CsvIngestRunSummary } from "../ingest/types";
 import { PhotoClusterRunResult, PhotoSyncRunSummary } from "../photo/types";
 import { cleanupReportFiles } from "../reports/csv-report";
 import { GeneratedReportFile } from "../reports/types";
@@ -33,6 +33,33 @@ function formatDuration(durationMs: number): string {
   return `${minutes} хв ${seconds} с`;
 }
 
+function buildCsvFieldUpdatesMessage(stats: CsvFieldUpdateStat[]): string {
+  if (stats.length === 0) {
+    return "CSV поля, які змінювались\nнемає";
+  }
+
+  const lines = ["CSV поля, які змінювались (кількість лотів):"];
+  let currentLength = lines[0].length;
+  let hidden = 0;
+
+  for (const stat of stats) {
+    const line = `${stat.field}: ${formatCount(stat.lotsUpdated)}`;
+    const nextLength = currentLength + 1 + line.length;
+    if (nextLength > 3500) {
+      hidden += 1;
+      continue;
+    }
+    lines.push(line);
+    currentLength = nextLength;
+  }
+
+  if (hidden > 0) {
+    lines.push(`... +${formatCount(hidden)} полів`);
+  }
+
+  return lines.join("\n");
+}
+
 function buildPipelineSuccessMessage(
   ingest: CsvIngestRunSummary,
   photo: PhotoSyncRunSummary | PhotoClusterRunResult,
@@ -49,18 +76,29 @@ function buildPipelineSuccessMessage(
   const http404Total = photo.mode === "cluster" ? photo.totalHttp404Count : photo.http404Count;
   const http404CsvAttached = Boolean(photo.http404Report);
 
-  const lines = [
-    "Оновлення Copart завершено",
-    "",
-    "CSV",
+  const csvLines = [
     `Лотів у CSV: ${formatCount(ingest.rowsValid)}`,
     `Нових лотів: ${formatCount(ingest.rowsInserted)}`,
     `Оновлених лотів: ${formatCount(ingest.rowsUpdated)}`,
     `Оновлено зі зміною image_url: ${formatCount(ingest.rowsUpdatedImageUrlChanged)}`,
     `Некоректних рядків: ${formatCount(ingest.rowsInvalid)}`,
     `Видалено зі snapshot: ${formatCount(ingest.prunedLots)}`,
-    "",
-    "Фото",
+  ];
+
+  if (ingest.updatedFields.length === 0) {
+    csvLines.push("Зміни по CSV полях: немає");
+  } else {
+    const topUpdatedFields = ingest.updatedFields.slice(0, 10);
+    csvLines.push(`Зміни по CSV полях: ${formatCount(ingest.updatedFields.length)} полів`);
+    for (const stat of topUpdatedFields) {
+      csvLines.push(`Поле "${stat.field}": ${formatCount(stat.lotsUpdated)} лотів`);
+    }
+    if (ingest.updatedFields.length > topUpdatedFields.length) {
+      csvLines.push(`Інші поля: ${formatCount(ingest.updatedFields.length - topUpdatedFields.length)}`);
+    }
+  }
+
+  const photoLines = [
     `Кандидатів на photo-stage: ${formatCount(photoScanned)}`,
     `Опрацьовано лотів: ${formatCount(photoProcessed)}`,
     `Опрацьовано фото-посилань: ${formatCount(photoLinksProcessed)}`,
@@ -69,6 +107,8 @@ function buildPipelineSuccessMessage(
     `Лотів з endpoint 404: ${formatCount(endpoint404Lots)}`,
     `Усього HTTP 404: ${formatCount(http404Total)}`,
   ];
+
+  const lines = ["Оновлення Copart завершено", "", "CSV", ...csvLines, "", "Фото", ...photoLines];
 
   lines.push(
     "",
@@ -127,6 +167,7 @@ async function executeFullPipelineOnce(): Promise<void> {
     });
     if (env.telegram.sendSuccessSummary) {
       await sendTelegramMessage(buildPipelineSuccessMessage(ingestResult.summary, photoResult, totalDurationMs));
+      await sendTelegramMessage(buildCsvFieldUpdatesMessage(ingestResult.summary.updatedFields));
       await sendTelegramDocuments(
         reportFiles.map(file => ({
           path: file.path,
