@@ -1,5 +1,5 @@
 ALTER TABLE `{{MEDIA_DB}}`.`lot_images`
-  ADD COLUMN `url_hash` CHAR(64) NULL AFTER `url`;
+  ADD COLUMN IF NOT EXISTS `url_hash` CHAR(64) NULL AFTER `url`;
 
 UPDATE `{{MEDIA_DB}}`.`lot_images`
 SET `url_hash` = SHA2(`url`, 256)
@@ -20,6 +20,38 @@ WHERE id IN (
 );
 
 ALTER TABLE `{{MEDIA_DB}}`.`lot_images`
-  DROP INDEX `uq_lot_sequence_variant`,
-  MODIFY COLUMN `url_hash` CHAR(64) NOT NULL,
-  ADD UNIQUE KEY `uq_lot_sequence_url_hash` (`lot_number`, `sequence`, `url_hash`);
+  MODIFY COLUMN `url_hash` CHAR(64) NOT NULL;
+
+SET @drop_legacy_index_sql = (
+  SELECT IF(
+    EXISTS(
+      SELECT 1
+      FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = '{{MEDIA_DB}}'
+        AND TABLE_NAME = 'lot_images'
+        AND INDEX_NAME = 'uq_lot_sequence_variant'
+    ),
+    'ALTER TABLE `{{MEDIA_DB}}`.`lot_images` DROP INDEX `uq_lot_sequence_variant`',
+    'SELECT 1'
+  )
+);
+PREPARE stmt_drop_legacy_index FROM @drop_legacy_index_sql;
+EXECUTE stmt_drop_legacy_index;
+DEALLOCATE PREPARE stmt_drop_legacy_index;
+
+SET @add_hash_unique_sql = (
+  SELECT IF(
+    EXISTS(
+      SELECT 1
+      FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = '{{MEDIA_DB}}'
+        AND TABLE_NAME = 'lot_images'
+        AND INDEX_NAME = 'uq_lot_sequence_url_hash'
+    ),
+    'SELECT 1',
+    'ALTER TABLE `{{MEDIA_DB}}`.`lot_images` ADD UNIQUE KEY `uq_lot_sequence_url_hash` (`lot_number`, `sequence`, `url_hash`)'
+  )
+);
+PREPARE stmt_add_hash_unique FROM @add_hash_unique_sql;
+EXECUTE stmt_add_hash_unique;
+DEALLOCATE PREPARE stmt_add_hash_unique;
