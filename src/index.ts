@@ -7,6 +7,7 @@ import { runPhotoCluster } from "./services/photo/photo-cluster";
 import { startScheduler } from "./services/scheduler/scheduler";
 import { runFullPipelineOnce } from "./services/pipeline/run-once";
 import { runProxyCheck } from "./services/proxy/proxy-check";
+import { runRetentionCleanup } from "./services/maintenance/retention";
 
 async function run(): Promise<void> {
   const command = process.argv[2];
@@ -21,6 +22,7 @@ async function run(): Promise<void> {
         "  node dist/index.js photo:cluster",
         "  node dist/index.js proxy:check",
         "  node dist/index.js pipeline:run-once",
+        "  node dist/index.js retention:cleanup",
         "  node dist/index.js scheduler:start",
         "",
       ].join("\n")
@@ -46,6 +48,9 @@ async function run(): Promise<void> {
       return;
     case "pipeline:run-once":
       await runFullPipelineOnce();
+      return;
+    case "retention:cleanup":
+      await runRetentionCleanup({ ignoreEnabledFlag: true });
       return;
     case "scheduler:start":
       await startScheduler();

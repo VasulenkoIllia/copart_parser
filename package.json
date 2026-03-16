@@ -14,6 +14,7 @@
     "photo:cluster": "npm run build && node dist/index.js photo:cluster",
     "proxy:check": "npm run build && node dist/index.js proxy:check",
     "pipeline:run-once": "npm run build && node dist/index.js pipeline:run-once",
+    "retention:cleanup": "npm run build && node dist/index.js retention:cleanup",
     "scheduler:start": "npm run build && node dist/index.js scheduler:start",
     "test:photo-update": "node ./scripts/photo-update-test-suite.mjs"
   },

@@ -19,6 +19,17 @@ interface AppEnv {
     runLockTtlSec: number;
     runOnStart: boolean;
   };
+  maintenance: {
+    enabled: boolean;
+    cron: string;
+    batchSize: number;
+    pruneOrphanLotImages: boolean;
+    photoFetchAttemptsRetentionDays: number;
+    invalidCsvRowsRetentionDays: number;
+    ingestRunsRetentionDays: number;
+    photoRunsRetentionDays: number;
+    photoClusterRunsRetentionDays: number;
+  };
   csv: {
     sourceUrl: string;
     authKey: string;
@@ -242,6 +253,17 @@ const env: AppEnv = {
     runLockTtlSec: toInt("RUN_LOCK_TTL_SEC", 16200),
     runOnStart: toBoolean("SCHEDULER_RUN_ON_START", false),
   },
+  maintenance: {
+    enabled: toBoolean("RETENTION_ENABLED", true),
+    cron: optional("RETENTION_CRON", "30 3 * * *"),
+    batchSize: toInt("RETENTION_BATCH_SIZE", 5000),
+    pruneOrphanLotImages: toBoolean("RETENTION_PRUNE_ORPHAN_LOT_IMAGES", true),
+    photoFetchAttemptsRetentionDays: toInt("RETENTION_PHOTO_FETCH_ATTEMPTS_DAYS", 30),
+    invalidCsvRowsRetentionDays: toInt("RETENTION_INVALID_CSV_ROWS_DAYS", 30),
+    ingestRunsRetentionDays: toInt("RETENTION_INGEST_RUNS_DAYS", 45),
+    photoRunsRetentionDays: toInt("RETENTION_PHOTO_RUNS_DAYS", 45),
+    photoClusterRunsRetentionDays: toInt("RETENTION_PHOTO_CLUSTER_RUNS_DAYS", 45),
+  },
   csv: {
     sourceUrl: optional("CSV_SOURCE_URL", "https://allzap.site/copart/salesdata.csv"),
     authKey: optional("CSV_AUTH_KEY", "change_me"),
@@ -325,6 +347,30 @@ const env: AppEnv = {
 };
 
 env.proxy.list = parseProxyList(env.proxy.mode, "PROXY_LIST", "PROXY_LIST_FILE");
+
+if (env.maintenance.batchSize < 1) {
+  throw new Error("RETENTION_BATCH_SIZE must be >= 1");
+}
+
+if (env.maintenance.photoFetchAttemptsRetentionDays < 0) {
+  throw new Error("RETENTION_PHOTO_FETCH_ATTEMPTS_DAYS must be >= 0");
+}
+
+if (env.maintenance.invalidCsvRowsRetentionDays < 0) {
+  throw new Error("RETENTION_INVALID_CSV_ROWS_DAYS must be >= 0");
+}
+
+if (env.maintenance.ingestRunsRetentionDays < 0) {
+  throw new Error("RETENTION_INGEST_RUNS_DAYS must be >= 0");
+}
+
+if (env.maintenance.photoRunsRetentionDays < 0) {
+  throw new Error("RETENTION_PHOTO_RUNS_DAYS must be >= 0");
+}
+
+if (env.maintenance.photoClusterRunsRetentionDays < 0) {
+  throw new Error("RETENTION_PHOTO_CLUSTER_RUNS_DAYS must be >= 0");
+}
 
 if (env.ingest.upsertChunk > env.ingest.batchSize) {
   throw new Error("INGEST_UPSERT_CHUNK must be <= INGEST_BATCH_SIZE");

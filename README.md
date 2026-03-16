@@ -71,6 +71,7 @@ docker compose run --rm app node dist/index.js db:migrate
 - `docker compose run --rm app node dist/index.js ingest:csv` — запуск ingest в контейнері.
 - `docker compose run --rm app node dist/index.js photo:sync` — запуск photo-sync в контейнері.
 - `docker compose run --rm app node dist/index.js pipeline:run-once` — одноразовий повний цикл.
+- `docker compose run --rm app node dist/index.js retention:cleanup` — ручний retention/housekeeping.
 - `docker compose run --rm app node dist/index.js proxy:check` — перевірка проксі-пулу.
 - `./scripts/fresh-test.sh` — повний чистий тестовий цикл (`db-drop -> migrate -> ingest(1000) -> photo:cluster -> SQL summary`).
 
@@ -84,6 +85,16 @@ docker compose run --rm app node dist/index.js db:migrate
 INGEST_CRON=0 0,5,10,15,20 * * *
 PHOTO_RETRY_CRON=
 SCHEDULER_RUN_ON_START=true
+
+RETENTION_ENABLED=true
+RETENTION_CRON=30 3 * * *
+RETENTION_BATCH_SIZE=5000
+RETENTION_PRUNE_ORPHAN_LOT_IMAGES=true
+RETENTION_PHOTO_FETCH_ATTEMPTS_DAYS=30
+RETENTION_INVALID_CSV_ROWS_DAYS=30
+RETENTION_INGEST_RUNS_DAYS=45
+RETENTION_PHOTO_RUNS_DAYS=45
+RETENTION_PHOTO_CLUSTER_RUNS_DAYS=45
 
 HTTP_MODE=proxy
 PROXY_LIST_FILE=./proxies.txt
@@ -145,7 +156,8 @@ docker compose up -d mysql app
 - `npm run photo:sync` — парсинг `lotImages`, перевірка фото, оновлення `copart_media`.
 - `npm run proxy:check` — preflight перевірка проксі, відбір робочих і оцінка місткості.
 - `npm run pipeline:run-once` — повний цикл: ingest + photo sync.
-- `npm run scheduler:start` — планувальник (кожні 5 годин запускає повний pipeline ingest+photo; `PHOTO_RETRY_CRON` опційний).
+- `npm run scheduler:start` — планувальник (кожні 5 годин запускає повний pipeline ingest+photo; `PHOTO_RETRY_CRON` і `RETENTION_CRON` опційні).
+- `npm run retention:cleanup` — ручний запуск retention/housekeeping.
 - `npm run db:reset` — швидке очищення runtime-таблиць через Docker MySQL.
 - `npm run db:drop` — повний drop/recreate двох БД через Docker MySQL.
 - `./scripts/fresh-test.sh` — один командний сценарій чистого тесту з підсумковими SQL-метриками.
@@ -514,7 +526,8 @@ docker compose run --rm \
    - метрики швидкості і якості (`rows/sec`, `invalid_rate`, `404_rate`, `run_duration`);
    - Telegram alert при аномаліях.
 5. Retention/обслуговування:
-   - автоочистка `photo_fetch_attempts`;
+   - автоочистка технічних таблиць (`photo_fetch_attempts`, `invalid_csv_rows`, історія run'ів);
+   - orphan-cleanup у `copart_media.lot_images` (для лотів, яких вже немає в `copart_core.lots`);
    - періодична перевірка індексів під великий обсяг.
 6. Бізнес-логіка фінальної БД:
    - `missing/404` не показувати у фінальній видачі одразу;
@@ -523,7 +536,7 @@ docker compose run --rm \
 ## Ближчі кроки
 
 1. Додати обмеження швидкості та батчовий контроль для фото-запитів по проксі-пулах.
-2. Додати окремий retention-job для очищення старих `photo_fetch_attempts`.
+2. Налаштувати retention-періоди під ваш прод-обсяг і SLA.
 3. Додати health endpoint і базові runtime метрики (uptime, last successful runs).
 4. Додати правило для фінальної БД: лоти зі статусом `missing`/`404` прибирати з фінальної видачі одразу; у `copart_core` лишати для ретраїв і hard-delete після 30 днів.
 

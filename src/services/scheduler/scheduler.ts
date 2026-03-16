@@ -4,6 +4,7 @@ import { logger } from "../../lib/logger";
 import { runPhotoCluster } from "../photo/photo-cluster";
 import { runPhotoSync } from "../photo/photo-sync";
 import { runFullPipelineOnce } from "../pipeline/run-once";
+import { runRetentionCleanup } from "../maintenance/retention";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 
 function pad2(value: number): string {
@@ -88,10 +89,13 @@ async function safeRun(name: string, action: () => Promise<unknown>): Promise<vo
 
 export async function startScheduler(): Promise<void> {
   const photoRetryCron = env.schedule.photoRetryCron.trim();
+  const retentionCron = env.maintenance.cron.trim();
 
   logger.info("Scheduler started", {
     ingestCron: env.schedule.ingestCron,
     photoRetryCron: photoRetryCron || "disabled",
+    retentionEnabled: env.maintenance.enabled,
+    retentionCron: retentionCron || "disabled",
     timezone: env.app.tz,
     runOnStart: env.schedule.runOnStart,
   });
@@ -120,6 +124,18 @@ export async function startScheduler(): Promise<void> {
     );
   }
 
+  if (env.maintenance.enabled && retentionCron) {
+    cron.schedule(
+      retentionCron,
+      () => {
+        void safeRun("RETENTION_CLEANUP", () => runRetentionCleanup());
+      },
+      {
+        timezone: env.app.tz,
+      }
+    );
+  }
+
   if (env.schedule.runOnStart) {
     await safeRun("PIPELINE_REFRESH_ON_START", runFullPipelineOnce);
   }
@@ -133,6 +149,8 @@ export async function startScheduler(): Promise<void> {
         `Cron CSV: ${env.schedule.ingestCron}`,
         `Окремий photo retry: ${describeCron(photoRetryCron)}`,
         ...(photoRetryCron ? [`Cron photo retry: ${photoRetryCron}`] : []),
+        `Retention cleanup: ${env.maintenance.enabled ? describeCron(retentionCron) : "вимкнено"}`,
+        ...(env.maintenance.enabled && retentionCron ? [`Cron retention: ${retentionCron}`] : []),
         `Часова зона: ${env.app.tz}`,
         `Автостарт після рестарту: ${env.schedule.runOnStart ? "так" : "ні"}`,
       ].join("\n")
