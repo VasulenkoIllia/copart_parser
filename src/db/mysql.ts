@@ -13,6 +13,7 @@ export function getPool(): Pool {
     port: env.mysql.port,
     user: env.mysql.user,
     password: env.mysql.password,
+    database: env.mysql.databaseCore,
     waitForConnections: true,
     connectionLimit: env.mysql.poolMax,
     maxIdle: env.mysql.poolMin,
