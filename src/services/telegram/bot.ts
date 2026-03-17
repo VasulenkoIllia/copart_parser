@@ -3,6 +3,7 @@ import env from "../../config/env";
 import { logger } from "../../lib/logger";
 import { refreshLotFullyByNumber } from "../manual/lot-refresh";
 import { isTelegramConfigured, sendTelegramMessage } from "../notify/telegram";
+import { REFRESH_LOT_COMMAND_FORMAT, REFRESH_LOT_COMMAND_GROUP_FORMAT } from "./refresh-command";
 
 interface TelegramChat {
   id: number;
@@ -137,7 +138,11 @@ async function handleRefreshCommand(message: TelegramMessage, args: string[]): P
   const lotNumber = parseLotNumberArg(args[0]);
   if (!lotNumber) {
     await sendTelegramMessage(
-      "Формат команди: /refresh_lot <lot_number>",
+      [
+        "Формат команди:",
+        `Приват: ${REFRESH_LOT_COMMAND_FORMAT}`,
+        `Група: ${REFRESH_LOT_COMMAND_GROUP_FORMAT}`,
+      ].join("\n"),
       {
         chatId: String(message.chat.id),
         replyToMessageId: message.message_id,

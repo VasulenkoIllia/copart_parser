@@ -10,6 +10,10 @@ import { CsvFieldUpdateStat, CsvIngestRunSummary } from "../ingest/types";
 import { PhotoClusterRunResult, PhotoSyncRunSummary } from "../photo/types";
 import { cleanupReportFiles } from "../reports/csv-report";
 import { GeneratedReportFile } from "../reports/types";
+import {
+  REFRESH_LOT_COMMAND_GROUP_EXAMPLE,
+  REFRESH_LOT_COMMAND_PRIVATE_EXAMPLE,
+} from "../telegram/refresh-command";
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat("uk-UA").format(value);
@@ -115,6 +119,13 @@ function buildPipelineSuccessMessage(
     `CSV: ${formatDuration(ingest.durationMs)}`,
     `Фото: ${formatDuration(photo.durationMs)}`,
     `Разом: ${formatDuration(totalDurationMs)}`
+  );
+
+  lines.push(
+    "",
+    "Команда",
+    `Приват: ${REFRESH_LOT_COMMAND_PRIVATE_EXAMPLE}`,
+    `Група: ${REFRESH_LOT_COMMAND_GROUP_EXAMPLE}`
   );
 
   return lines.join("\n");
