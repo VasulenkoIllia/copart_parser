@@ -112,6 +112,8 @@ interface AppEnv {
     chatId: string;
     sendSuccessSummary: boolean;
     sendErrorAlerts: boolean;
+    pollingEnabled: boolean;
+    pollTimeoutSec: number;
   };
 }
 
@@ -349,6 +351,8 @@ const env: AppEnv = {
     chatId: optional("TELEGRAM_CHAT_ID", ""),
     sendSuccessSummary: toBoolean("TELEGRAM_SEND_SUCCESS_SUMMARY", true),
     sendErrorAlerts: toBoolean("TELEGRAM_SEND_ERROR_ALERTS", true),
+    pollingEnabled: toBoolean("TELEGRAM_BOT_POLLING_ENABLED", true),
+    pollTimeoutSec: toInt("TELEGRAM_BOT_POLL_TIMEOUT_SEC", 20),
   },
 };
 
@@ -416,6 +420,10 @@ if (!isSafeMysqlIdentifier(env.mysql.databaseMedia)) {
 
 if (env.photo.workerTotal < 1) {
   throw new Error("PHOTO_WORKER_TOTAL must be >= 1");
+}
+
+if (env.telegram.pollTimeoutSec < 1 || env.telegram.pollTimeoutSec > 50) {
+  throw new Error("TELEGRAM_BOT_POLL_TIMEOUT_SEC must be in range [1, 50]");
 }
 
 if (env.photo.workerIndex < 0 || env.photo.workerIndex >= env.photo.workerTotal) {

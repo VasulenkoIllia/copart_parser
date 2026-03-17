@@ -6,6 +6,7 @@ import { runPhotoSync } from "../photo/photo-sync";
 import { runFullPipelineOnce } from "../pipeline/run-once";
 import { runRetentionCleanup } from "../maintenance/retention";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
+import { startTelegramBotPolling } from "../telegram/bot";
 
 function pad2(value: number): string {
   return value.toString().padStart(2, "0");
@@ -100,6 +101,12 @@ export async function startScheduler(): Promise<void> {
     runOnStart: env.schedule.runOnStart,
   });
 
+  void startTelegramBotPolling().catch(error => {
+    logger.error("Telegram bot polling crashed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+
   cron.schedule(
     env.schedule.ingestCron,
     () => {
@@ -153,6 +160,7 @@ export async function startScheduler(): Promise<void> {
         ...(env.maintenance.enabled && retentionCron ? [`Cron retention: ${retentionCron}`] : []),
         `Часова зона: ${env.app.tz}`,
         `Автостарт після рестарту: ${env.schedule.runOnStart ? "так" : "ні"}`,
+        `Telegram bot polling: ${env.telegram.pollingEnabled ? "увімкнено" : "вимкнено"}`,
       ].join("\n")
     );
   }

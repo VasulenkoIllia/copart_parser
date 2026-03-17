@@ -746,6 +746,40 @@ export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandi
   }));
 }
 
+export async function fetchPhotoCandidateByLotNumber(
+  lotNumber: number
+): Promise<PhotoLotCandidate | null> {
+  const pool = getPool();
+  const [rows] = await pool.query<LotCandidateRow[]>(
+    `
+      SELECT
+        lot_number,
+        yard_number,
+        image_url,
+        photo_status,
+        photo_404_count
+      FROM \`${env.mysql.databaseCore}\`.\`lots\`
+      WHERE lot_number = ?
+        AND image_url IS NOT NULL
+      LIMIT 1
+    `,
+    [lotNumber]
+  );
+
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return {
+    lotNumber: Number(row.lot_number),
+    yardNumber: row.yard_number === null ? null : Number(row.yard_number),
+    imageUrl: String(row.image_url),
+    photoStatus: row.photo_status,
+    photo404Count: Number(row.photo_404_count || 0),
+  };
+}
+
 export async function logPhotoAttempt(
   lotNumber: number,
   url: string | null,
@@ -1036,6 +1070,47 @@ export async function markLotPhotoOk(lotNumber: number): Promise<void> {
     `,
     [lotNumber]
   );
+}
+
+export async function resetLotPhotoState(lotNumber: number): Promise<void> {
+  const pool = getPool();
+  await pool.query(
+    `
+      UPDATE \`${env.mysql.databaseCore}\`.\`lots\`
+      SET
+        photo_status = 'unknown',
+        photo_404_count = 0,
+        photo_404_since = NULL,
+        next_photo_retry_at = NULL,
+        last_photo_check_at = NULL
+      WHERE lot_number = ?
+    `,
+    [lotNumber]
+  );
+}
+
+export async function clearLotImages(lotNumber: number): Promise<number> {
+  const pool = getPool();
+  const [result] = await pool.query<ResultSetHeader>(
+    `
+      DELETE FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
+      WHERE lot_number = ?
+    `,
+    [lotNumber]
+  );
+  return Number(result.affectedRows ?? 0);
+}
+
+export async function clearLotPhotoAttempts(lotNumber: number): Promise<number> {
+  const pool = getPool();
+  const [result] = await pool.query<ResultSetHeader>(
+    `
+      DELETE FROM \`${env.mysql.databaseMedia}\`.\`photo_fetch_attempts\`
+      WHERE lot_number = ?
+    `,
+    [lotNumber]
+  );
+  return Number(result.affectedRows ?? 0);
 }
 
 export async function markLotPhotoMissingOn404(

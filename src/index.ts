@@ -8,6 +8,7 @@ import { startScheduler } from "./services/scheduler/scheduler";
 import { runFullPipelineOnce } from "./services/pipeline/run-once";
 import { runProxyCheck } from "./services/proxy/proxy-check";
 import { runRetentionCleanup } from "./services/maintenance/retention";
+import { startTelegramBotPolling } from "./services/telegram/bot";
 
 async function run(): Promise<void> {
   const command = process.argv[2];
@@ -24,6 +25,7 @@ async function run(): Promise<void> {
         "  node dist/index.js pipeline:run-once",
         "  node dist/index.js retention:cleanup",
         "  node dist/index.js scheduler:start",
+        "  node dist/index.js telegram:bot",
         "",
       ].join("\n")
     );
@@ -54,6 +56,9 @@ async function run(): Promise<void> {
       return;
     case "scheduler:start":
       await startScheduler();
+      return;
+    case "telegram:bot":
+      await startTelegramBotPolling();
       return;
     default:
       throw new Error(`Unknown command: ${command}`);

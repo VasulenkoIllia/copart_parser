@@ -12,6 +12,12 @@ interface ExistingLotHashRow extends RowDataPacket {
   csv_payload: unknown;
 }
 
+interface CoreLotSnapshotRow extends RowDataPacket {
+  lot_number: number;
+  yard_number: number | null;
+  image_url: string | null;
+}
+
 interface ExistingLotSnapshot {
   rowHash: string;
   imageUrl: string | null;
@@ -31,18 +37,27 @@ interface EnsureCsvColumnsResult {
   mappings: CsvFieldColumnMapping[];
 }
 
+export interface CoreLotSnapshot {
+  lotNumber: number;
+  yardNumber: number | null;
+  imageUrl: string | null;
+}
+
 let lotsColumnsCache: Set<string> | null = null;
 
-export async function createIngestRun(sourceUrl: string): Promise<number> {
+export async function createIngestRun(
+  sourceUrl: string,
+  runType: string = "csv_ingest"
+): Promise<number> {
   const pool = getPool();
   const [result] = await pool.query<ResultSetHeader>(
     `
       INSERT INTO \`${env.mysql.databaseCore}\`.\`ingest_runs\`
         (run_type, status, source_url)
       VALUES
-        ('csv_ingest', 'running', ?)
+        (?, 'running', ?)
     `,
-    [sourceUrl]
+    [runType, sourceUrl]
   );
   return result.insertId;
 }
@@ -505,6 +520,30 @@ export async function upsertLotsBatch(
 export async function clearIngestLotStage(): Promise<void> {
   const pool = getPool();
   await pool.query(`DELETE FROM \`${env.mysql.databaseCore}\`.\`ingest_lot_stage\``);
+}
+
+export async function fetchCoreLotSnapshot(lotNumber: number): Promise<CoreLotSnapshot | null> {
+  const pool = getPool();
+  const [rows] = await pool.query<CoreLotSnapshotRow[]>(
+    `
+      SELECT lot_number, yard_number, image_url
+      FROM \`${env.mysql.databaseCore}\`.\`lots\`
+      WHERE lot_number = ?
+      LIMIT 1
+    `,
+    [lotNumber]
+  );
+
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return {
+    lotNumber: Number(row.lot_number),
+    yardNumber: row.yard_number === null ? null : Number(row.yard_number),
+    imageUrl: row.image_url === null ? null : String(row.image_url),
+  };
 }
 
 export async function pruneMissingLots(): Promise<number> {

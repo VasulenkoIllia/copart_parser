@@ -9,7 +9,12 @@ export interface TelegramDocument {
   caption?: string;
 }
 
-function isConfigured(): boolean {
+export interface TelegramMessageOptions {
+  chatId?: string;
+  replyToMessageId?: number;
+}
+
+export function isTelegramConfigured(): boolean {
   return Boolean(env.telegram.enabled && env.telegram.botToken && env.telegram.chatId);
 }
 
@@ -17,8 +22,11 @@ function buildApiUrl(method: string): string {
   return `https://api.telegram.org/bot${env.telegram.botToken}/${method}`;
 }
 
-export async function sendTelegramMessage(text: string): Promise<void> {
-  if (!isConfigured()) {
+export async function sendTelegramMessage(
+  text: string,
+  options: TelegramMessageOptions = {}
+): Promise<void> {
+  if (!isTelegramConfigured()) {
     return;
   }
 
@@ -26,9 +34,10 @@ export async function sendTelegramMessage(text: string): Promise<void> {
     await axios.post(
       buildApiUrl("sendMessage"),
       {
-        chat_id: env.telegram.chatId,
+        chat_id: options.chatId ?? env.telegram.chatId,
         text,
         disable_web_page_preview: true,
+        ...(options.replyToMessageId ? { reply_to_message_id: options.replyToMessageId } : {}),
       },
       {
         timeout: 15_000,
@@ -42,7 +51,7 @@ export async function sendTelegramMessage(text: string): Promise<void> {
 }
 
 export async function sendTelegramDocuments(documents: TelegramDocument[]): Promise<void> {
-  if (!isConfigured() || documents.length === 0) {
+  if (!isTelegramConfigured() || documents.length === 0) {
     return;
   }
 

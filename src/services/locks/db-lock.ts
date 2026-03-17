@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { ResultSetHeader } from "mysql2";
+import { ResultSetHeader, RowDataPacket } from "mysql2";
 import env from "../../config/env";
 import { getPool } from "../../db/mysql";
 import { logger } from "../../lib/logger";
@@ -7,6 +7,28 @@ import { logger } from "../../lib/logger";
 export interface AppLockHandle {
   lockName: string;
   ownerId: string;
+}
+
+interface ActiveAppLockRow extends RowDataPacket {
+  lock_name: string;
+  owner_id: string;
+  locked_until: Date | string;
+}
+
+export interface ActiveAppLock {
+  lockName: string;
+  ownerId: string;
+  lockedUntil: Date;
+}
+
+function normalizeLockNames(lockNames: string[]): string[] {
+  return Array.from(
+    new Set(
+      lockNames
+        .map(lockName => lockName.trim())
+        .filter(Boolean)
+    )
+  );
 }
 
 export async function acquireAppLock(lockName: string): Promise<AppLockHandle | null> {
@@ -75,13 +97,56 @@ export async function renewAppLock(handle: AppLockHandle): Promise<void> {
   }
 }
 
-export async function withAppLock<T>(
-  lockName: string,
+export async function fetchActiveAppLocks(lockNames: string[]): Promise<ActiveAppLock[]> {
+  const normalizedLockNames = normalizeLockNames(lockNames);
+  if (normalizedLockNames.length === 0) {
+    return [];
+  }
+
+  const placeholders = normalizedLockNames.map(() => "?").join(", ");
+  const pool = getPool();
+  const [rows] = await pool.query<ActiveAppLockRow[]>(
+    `
+      SELECT lock_name, owner_id, locked_until
+      FROM \`${env.mysql.databaseCore}\`.\`app_locks\`
+      WHERE lock_name IN (${placeholders})
+        AND locked_until >= CURRENT_TIMESTAMP(3)
+      ORDER BY lock_name ASC
+    `,
+    normalizedLockNames
+  );
+
+  return rows.map(row => ({
+    lockName: String(row.lock_name),
+    ownerId: String(row.owner_id),
+    lockedUntil:
+      row.locked_until instanceof Date ? row.locked_until : new Date(String(row.locked_until)),
+  }));
+}
+
+async function releaseAppLocks(handles: AppLockHandle[]): Promise<void> {
+  for (const handle of [...handles].reverse()) {
+    await releaseAppLock(handle);
+  }
+}
+
+export async function withAppLocks<T>(
+  lockNames: string[],
   callback: () => Promise<T>
 ): Promise<T | null> {
-  const handle = await acquireAppLock(lockName);
-  if (!handle) {
-    return null;
+  const normalizedLockNames = normalizeLockNames(lockNames);
+  if (normalizedLockNames.length === 0) {
+    return callback();
+  }
+
+  const handles: AppLockHandle[] = [];
+  for (const lockName of normalizedLockNames) {
+    const handle = await acquireAppLock(lockName);
+    if (!handle) {
+      await releaseAppLocks(handles);
+      return null;
+    }
+    handles.push(handle);
   }
 
   const renewEveryMs = Math.max(1_000, Math.floor((env.schedule.runLockTtlSec * 1_000) / 3));
@@ -93,13 +158,13 @@ export async function withAppLock<T>(
     }
 
     renewInFlight = true;
-    void renewAppLock(handle)
+    void Promise.all(handles.map(handle => renewAppLock(handle)))
       .catch(error => {
         const normalizedError = error instanceof Error ? error : new Error(String(error));
         lockLostError = lockLostError ?? normalizedError;
         logger.error("App lock renewal failed", {
-          lockName: handle.lockName,
-          ownerId: handle.ownerId,
+          lockNames: handles.map(handle => handle.lockName),
+          ownerIds: handles.map(handle => handle.ownerId),
           message: normalizedError.message,
         });
       })
@@ -118,6 +183,13 @@ export async function withAppLock<T>(
     return result;
   } finally {
     clearInterval(timer);
-    await releaseAppLock(handle);
+    await releaseAppLocks(handles);
   }
+}
+
+export async function withAppLock<T>(
+  lockName: string,
+  callback: () => Promise<T>
+): Promise<T | null> {
+  return withAppLocks([lockName], callback);
 }

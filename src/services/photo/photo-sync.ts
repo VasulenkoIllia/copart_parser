@@ -7,11 +7,13 @@ import { withAppLock } from "../locks/db-lock";
 import { inspectLotImage } from "./image-inspector";
 import {
   calculateBackoffMinutes,
+  clearLotImages,
   completePhotoRunFailure,
   completePhotoRunSuccess,
   createPhotoRun,
   deriveVariant,
   fetchCachedGoodImages,
+  fetchPhotoCandidateByLotNumber,
   fetchPhotoCandidates,
   hashUrl,
   logPhotoAttempt,
@@ -34,6 +36,10 @@ import {
   PhotoSyncExecutionResult,
   PhotoSyncRunSummary,
 } from "./types";
+
+interface ProcessLotOptions {
+  storageMode?: "replace" | "merge";
+}
 
 function logLotResult(meta: Record<string, unknown>): void {
   if (!env.photo.logLotResults) {
@@ -180,7 +186,42 @@ async function inspectParsedLinks(links: ParsedLotImageLink[]): Promise<CheckedL
   return result;
 }
 
-async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounters): Promise<void> {
+function toSummary(
+  runId: number,
+  counters: PhotoRunCounters,
+  durationMs: number,
+  http404Report: GeneratedReportFile | null
+): PhotoSyncRunSummary {
+  return {
+    runId,
+    mode: "sync",
+    workerTotal: env.photo.workerTotal,
+    workerIndex: env.photo.workerIndex,
+    lotsScanned: counters.lotsScanned,
+    lotsProcessed: counters.lotsProcessed,
+    photoLinksProcessed: counters.photoLinksProcessed,
+    lotsOk: counters.lotsOk,
+    lotsMissing: counters.lotsMissing,
+    imagesUpserted: counters.imagesUpserted,
+    imagesInserted: counters.imagesInserted,
+    imagesUpdated: counters.imagesUpdated,
+    imagesFullSize: counters.imagesFullSize,
+    imagesStoredHd: counters.imagesStoredHd,
+    imagesStoredFull: counters.imagesStoredFull,
+    imagesBadQuality: counters.imagesBadQuality,
+    http404Count: counters.http404Count,
+    endpoint404Lots: counters.endpoint404Lots,
+    durationMs,
+    http404Report,
+  };
+}
+
+async function processLot(
+  candidate: PhotoLotCandidate,
+  counters: PhotoRunCounters,
+  options: ProcessLotOptions = {}
+): Promise<void> {
+  const storageMode = options.storageMode ?? "merge";
   const lotStartedAt = Date.now();
   const endpointProtocol = env.proxy.mode === "direct" ? "https" : "http";
   const endpointUrl =
@@ -258,6 +299,9 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
     const parsed = parseEndpointPayload(candidate.lotNumber, response.data);
     const supportedLinksCount = parsed.hdLinks.length + parsed.fullLinks.length;
     if (supportedLinksCount === 0 || parsed.imgCount === 0) {
+      if (storageMode === "replace") {
+        await clearLotImages(candidate.lotNumber);
+      }
       const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
       await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
       logResult({
@@ -290,7 +334,7 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
       usedFallbackFull = storageImages.length > 0;
     }
 
-    const replaceSummary = await replaceLotImages(candidate.lotNumber, storageImages, "merge");
+    const replaceSummary = await replaceLotImages(candidate.lotNumber, storageImages, storageMode);
 
     const imageStats = summarizeImageChecks(checkedLinks);
 
@@ -467,28 +511,7 @@ async function executePhotoSync(
         durationMs > 0 ? Number(((counters.imagesUpserted / durationMs) * 60_000).toFixed(2)) : 0,
     });
 
-    const summary: PhotoSyncRunSummary = {
-      runId,
-      mode: "sync",
-      workerTotal: env.photo.workerTotal,
-      workerIndex: env.photo.workerIndex,
-      lotsScanned: counters.lotsScanned,
-      lotsProcessed: counters.lotsProcessed,
-      photoLinksProcessed: counters.photoLinksProcessed,
-      lotsOk: counters.lotsOk,
-      lotsMissing: counters.lotsMissing,
-      imagesUpserted: counters.imagesUpserted,
-      imagesInserted: counters.imagesInserted,
-      imagesUpdated: counters.imagesUpdated,
-      imagesFullSize: counters.imagesFullSize,
-      imagesStoredHd: counters.imagesStoredHd,
-      imagesStoredFull: counters.imagesStoredFull,
-      imagesBadQuality: counters.imagesBadQuality,
-      http404Count: counters.http404Count,
-      endpoint404Lots: counters.endpoint404Lots,
-      durationMs,
-      http404Report,
-    };
+    const summary = toSummary(runId, counters, durationMs, http404Report);
 
     if ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary) {
       await sendTelegramMessage(
@@ -538,6 +561,72 @@ async function executePhotoSync(
     });
     if (options.notifyError ?? true) {
       await sendTelegramError("PHOTO SYNC FAILED", error);
+    }
+    throw error;
+  }
+}
+
+export async function runPhotoSyncForLot(
+  lotNumber: number,
+  options: {
+    notifySuccess?: boolean;
+    notifyError?: boolean;
+    build404Report?: boolean;
+    prepareProxyPool?: boolean;
+    storageMode?: "replace" | "merge";
+  } = {}
+): Promise<PhotoSyncRunSummary | null> {
+  const candidate = await fetchPhotoCandidateByLotNumber(lotNumber);
+  if (!candidate) {
+    return null;
+  }
+
+  if (options.prepareProxyPool ?? true) {
+    await prepareProxyPool("manual_lot_photo_refresh", true);
+  }
+
+  const startedAt = Date.now();
+  const counters = createCounters();
+  counters.lotsScanned = 1;
+  const runId = await createPhotoRun();
+  let http404Report: GeneratedReportFile | null = null;
+
+  try {
+    await processLot(candidate, counters, {
+      storageMode: options.storageMode ?? "replace",
+    });
+
+    await completePhotoRunSuccess(runId, counters);
+
+    const shouldBuild404Report =
+      options.build404Report ?? ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary);
+    if (shouldBuild404Report) {
+      http404Report = await tryCreatePhoto404ReportForRun(runId);
+    }
+
+    const summary = toSummary(runId, counters, Date.now() - startedAt, http404Report);
+    if ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary) {
+      await sendTelegramMessage(
+        [
+          "[PHOTO SYNC MANUAL LOT] success",
+          `lot_number=${lotNumber}`,
+          `lots_processed=${summary.lotsProcessed}`,
+          `photo_links_processed=${summary.photoLinksProcessed}`,
+          `lots_ok=${summary.lotsOk}`,
+          `lots_missing=${summary.lotsMissing}`,
+          `images_inserted=${summary.imagesInserted}`,
+          `images_updated=${summary.imagesUpdated}`,
+          `images_stored_hd=${summary.imagesStoredHd}`,
+          `images_stored_full=${summary.imagesStoredFull}`,
+        ].join("\n")
+      );
+    }
+    return summary;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await completePhotoRunFailure(runId, counters, message);
+    if (options.notifyError ?? true) {
+      await sendTelegramError("PHOTO SYNC MANUAL LOT FAILED", error);
     }
     throw error;
   }
