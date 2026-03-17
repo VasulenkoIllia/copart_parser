@@ -19,7 +19,8 @@ import {
   IngestCounters,
 } from "./types";
 import env from "../../config/env";
-import { withAppLock } from "../locks/db-lock";
+import { withAppLock, withAppLocks } from "../locks/db-lock";
+import { CSV_INGEST_LOCK, LOTS_MEDIA_GATE_LOCK, PIPELINE_REFRESH_LOCK } from "../locks/lock-names";
 import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { cleanupReportFiles } from "../reports/csv-report";
 import {
@@ -108,30 +109,12 @@ function toSortedFieldStats(counters: Map<string, number>): CsvFieldUpdateStat[]
 
 function buildUpdatedFieldsTelegramLines(stats: CsvFieldUpdateStat[]): string[] {
   if (stats.length === 0) {
-    return ["updated_fields=none"];
+    return ["updated_fields_top=none"];
   }
 
-  const lines = ["updated_fields_by_lots:"];
-  let currentLength = lines.join("\n").length;
-  let hidden = 0;
-
-  for (const stat of stats) {
-    const line = `${stat.field}=${stat.lotsUpdated}`;
-    const nextLength = currentLength + 1 + line.length;
-    if (nextLength > 3500) {
-      hidden += 1;
-      continue;
-    }
-
-    lines.push(line);
-    currentLength = nextLength;
-  }
-
-  if (hidden > 0) {
-    lines.push(`... +${hidden} fields`);
-  }
-
-  return lines;
+  const top = stats.slice(0, 5).map(stat => `${stat.field}=${stat.lotsUpdated}`).join(", ");
+  const more = stats.length > 5 ? `, +${stats.length - 5} fields` : "";
+  return [`updated_fields_top=${top}${more}`];
 }
 
 function invalidRowsPercent(counters: IngestCounters): number {
@@ -284,8 +267,19 @@ async function executeCsvIngest(
         );
       }
 
-      prunedLots = await pruneMissingLots();
-      prunedOrphanLotImages = await pruneOrphanLotImages();
+      const pruneLocked = await withAppLock(LOTS_MEDIA_GATE_LOCK, async () => {
+        const deletedLots = await pruneMissingLots();
+        const deletedLotImages = await pruneOrphanLotImages();
+        return {
+          deletedLots,
+          deletedLotImages,
+        };
+      });
+      if (pruneLocked === null) {
+        throw new Error("CSV prune skipped because lots/media gate lock is owned by another run");
+      }
+      prunedLots = pruneLocked.deletedLots;
+      prunedOrphanLotImages = pruneLocked.deletedLotImages;
     } else if (env.ingest.pruneMissingLots && skipPruneForLimitedRun) {
       logger.warn("CSV ingest prune skipped because run used INGEST_MAX_ROWS limit", {
         maxRows,
@@ -360,6 +354,7 @@ async function executeCsvIngest(
           `rows_updated_image_url_changed=${counters.rowsUpdatedImageUrlChanged}`,
           `rows_updated_other_fields=${counters.rowsUpdatedOtherFields}`,
           `rows_unchanged=${counters.rowsUnchanged}`,
+          `rows_invalid_percent=${invalidRowsPercent(counters)}`,
           `updated_fields_total=${updatedFields.length}`,
           `hydrated_lots_from_media=${hydratedLots}`,
           `pruned_lots=${prunedLots}`,
@@ -397,7 +392,12 @@ async function executeCsvIngest(
 }
 
 async function executeCsvIngestWithRetries(
-  options: { notifySuccess?: boolean; notifyError?: boolean; buildInvalidRowsReport?: boolean } = {}
+  options: {
+    notifySuccess?: boolean;
+    notifyError?: boolean;
+    buildInvalidRowsReport?: boolean;
+    skipGlobalRefreshLock?: boolean;
+  } = {}
 ): Promise<CsvIngestRunSummary> {
   const maxAttempts = env.ingest.executionRetries;
   let lastError: unknown = null;
@@ -437,9 +437,17 @@ async function executeCsvIngestWithRetries(
 }
 
 export async function runCsvIngest(
-  options: { notifySuccess?: boolean; notifyError?: boolean; buildInvalidRowsReport?: boolean } = {}
+  options: {
+    notifySuccess?: boolean;
+    notifyError?: boolean;
+    buildInvalidRowsReport?: boolean;
+    skipGlobalRefreshLock?: boolean;
+  } = {}
 ): Promise<CsvIngestExecutionResult> {
-  const locked = await withAppLock("csv_ingest", () => executeCsvIngestWithRetries(options));
+  const lockNames = options.skipGlobalRefreshLock
+    ? [CSV_INGEST_LOCK]
+    : [PIPELINE_REFRESH_LOCK, CSV_INGEST_LOCK];
+  const locked = await withAppLocks(lockNames, () => executeCsvIngestWithRetries(options));
   if (locked === null) {
     logger.warn("CSV ingest skipped because another run owns the lock");
     return { executed: false };

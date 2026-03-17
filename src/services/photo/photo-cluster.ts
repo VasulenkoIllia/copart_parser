@@ -6,6 +6,8 @@ import { getPool } from "../../db/mysql";
 import { getActiveProxyUrls, prepareProxyPoolWithHealthcheck } from "../../lib/http-client";
 import { logger } from "../../lib/logger";
 import { normalizeCopartLotImagesUrl } from "../../lib/url-utils";
+import { withAppLocks } from "../locks/db-lock";
+import { LOTS_MEDIA_GATE_LOCK, PIPELINE_REFRESH_LOCK } from "../locks/lock-names";
 import {
   completePhotoClusterRunFailure,
   completePhotoClusterRunSuccess,
@@ -194,6 +196,7 @@ function runWorker(
       env: {
         ...process.env,
         ...workerEnvOverrides,
+        PHOTO_SYNC_SKIP_GATE_LOCK: "true",
         PHOTO_WORKER_TOTAL: String(workerTotal),
         PHOTO_WORKER_INDEX: String(workerIndex),
       },
@@ -222,97 +225,113 @@ function runWorker(
 }
 
 export async function runPhotoCluster(
-  options: { build404Report?: boolean } = {}
-): Promise<PhotoClusterRunResult> {
-  const workerTotal = env.photo.workerTotal;
-  if (workerTotal < 1) {
-    throw new Error("PHOTO_WORKER_TOTAL must be >= 1 for photo:cluster");
-  }
-
-  const workerEnvOverrides = await buildWorkerProxyOverrides();
-  const selectedProxyCount = workerEnvOverrides.PROXY_LIST
-    ? workerEnvOverrides.PROXY_LIST.split(",").filter(Boolean).length
-    : env.proxy.list.length;
-  const clusterRunId = await createPhotoClusterRun(selectedProxyCount);
-  const workerEnv = {
-    ...workerEnvOverrides,
-    PHOTO_CLUSTER_RUN_ID: String(clusterRunId),
-    TELEGRAM_SEND_SUCCESS_SUMMARY: "false",
-    TELEGRAM_SEND_ERROR_ALERTS: "false",
-  };
-
-  logger.info("Photo cluster started", {
-    clusterRunId,
-    workerTotal,
-    fetchConcurrencyPerWorker: env.photo.fetchConcurrency,
-    batchSizePerWorker: env.photo.batchSize,
-    sharding: "MOD(CRC32(CAST(lot_number AS CHAR)), workerTotal) = workerIndex",
-    proxyAutoSelectForPhoto: env.proxy.autoSelectForPhoto,
-  });
-
-  const startedAt = Date.now();
-  try {
-    const workerPromises: Promise<WorkerRunResult>[] = [];
-    for (let workerIndex = 0; workerIndex < workerTotal; workerIndex += 1) {
-      workerPromises.push(runWorker(workerIndex, workerTotal, workerEnv));
+  options: { build404Report?: boolean; skipGlobalRefreshLock?: boolean } = {}
+): Promise<PhotoClusterRunResult | null> {
+  const lockNames = options.skipGlobalRefreshLock
+    ? [LOTS_MEDIA_GATE_LOCK]
+    : [PIPELINE_REFRESH_LOCK, LOTS_MEDIA_GATE_LOCK];
+  const locked = await withAppLocks(lockNames, async () => {
+    const workerTotal = env.photo.workerTotal;
+    if (workerTotal < 1) {
+      throw new Error("PHOTO_WORKER_TOTAL must be >= 1 for photo:cluster");
     }
 
-    const results = await Promise.all(workerPromises);
-    const failed = results.filter(result => result.exitCode !== 0);
-    if (failed.length > 0) {
-      await completePhotoClusterRunFailure(
-        clusterRunId,
-        `photo:cluster failed: ${failed.length}/${workerTotal} workers exited with non-zero code`
-      );
-    } else {
-      await completePhotoClusterRunSuccess(clusterRunId);
-    }
+    const workerEnvOverrides = await buildWorkerProxyOverrides();
+    const selectedProxyCount = workerEnvOverrides.PROXY_LIST
+      ? workerEnvOverrides.PROXY_LIST.split(",").filter(Boolean).length
+      : env.proxy.list.length;
+    const clusterRunId = await createPhotoClusterRun(selectedProxyCount);
+    const workerEnv = {
+      ...workerEnvOverrides,
+      PHOTO_CLUSTER_RUN_ID: String(clusterRunId),
+      PHOTO_SYNC_SKIP_PIPELINE_LOCK: "true",
+      TELEGRAM_SEND_SUCCESS_SUMMARY: "false",
+      TELEGRAM_SEND_ERROR_ALERTS: "false",
+    };
 
-    const workers = await fetchPhotoClusterRunWorkers(clusterRunId);
-    const summary = await fetchPhotoClusterRunResult(clusterRunId, Date.now() - startedAt);
-    if (options.build404Report) {
-      summary.http404Report = await tryCreatePhoto404ReportForClusterRun(clusterRunId);
-    }
-    logger.info("Photo cluster finished", {
+    logger.info("Photo cluster started", {
       clusterRunId,
       workerTotal,
-      durationMs: summary.durationMs,
-      workerResults: results.map(result => ({
-        workerIndex: result.workerIndex,
-        exitCode: result.exitCode,
-        signal: result.signal,
-        durationMs: result.durationMs,
-      })),
-      workerRuns: workers.map(worker => ({
-        photoRunId: worker.photoRunId,
-        workerIndex: worker.workerIndex,
-        status: worker.status,
-        lotsProcessed: worker.lotsProcessed,
-        photoLinksProcessed: worker.photoLinksProcessed,
-        lotsOk: worker.lotsOk,
-        lotsMissing: worker.lotsMissing,
-        imagesUpserted: worker.imagesUpserted,
-        imagesInserted: worker.imagesInserted,
-        imagesUpdated: worker.imagesUpdated,
-        imagesStoredHd: worker.imagesStoredHd,
-        imagesStoredFull: worker.imagesStoredFull,
-        http404Count: worker.http404Count,
-        endpoint404Lots: worker.endpoint404Lots,
-        durationMs: worker.durationMs,
-      })),
+      fetchConcurrencyPerWorker: env.photo.fetchConcurrency,
+      batchSizePerWorker: env.photo.batchSize,
+      sharding: "MOD(CRC32(CAST(lot_number AS CHAR)), workerTotal) = workerIndex",
+      proxyAutoSelectForPhoto: env.proxy.autoSelectForPhoto,
     });
 
-    if (failed.length > 0) {
-      throw new Error(
-        `photo:cluster failed: ${failed.length}/${workerTotal} workers exited with non-zero code`
-      );
+    const startedAt = Date.now();
+    let failureMessage: string | null = null;
+    try {
+      const workerPromises: Promise<WorkerRunResult>[] = [];
+      for (let workerIndex = 0; workerIndex < workerTotal; workerIndex += 1) {
+        workerPromises.push(runWorker(workerIndex, workerTotal, workerEnv));
+      }
+
+      const results = await Promise.all(workerPromises);
+      const failed = results.filter(result => result.exitCode !== 0);
+      failureMessage =
+        failed.length > 0
+          ? `photo:cluster failed: ${failed.length}/${workerTotal} workers exited with non-zero code`
+          : null;
+      if (failed.length > 0) {
+        await completePhotoClusterRunFailure(clusterRunId, failureMessage ?? "photo:cluster failed");
+      } else {
+        await completePhotoClusterRunSuccess(clusterRunId);
+      }
+
+      const workers = await fetchPhotoClusterRunWorkers(clusterRunId);
+      const summary = await fetchPhotoClusterRunResult(clusterRunId, Date.now() - startedAt);
+      if (options.build404Report) {
+        summary.http404Report = await tryCreatePhoto404ReportForClusterRun(clusterRunId);
+      }
+      logger.info("Photo cluster finished", {
+        clusterRunId,
+        workerTotal,
+        durationMs: summary.durationMs,
+        workerResults: results.map(result => ({
+          workerIndex: result.workerIndex,
+          exitCode: result.exitCode,
+          signal: result.signal,
+          durationMs: result.durationMs,
+        })),
+        workerRuns: workers.map(worker => ({
+          photoRunId: worker.photoRunId,
+          workerIndex: worker.workerIndex,
+          status: worker.status,
+          lotsProcessed: worker.lotsProcessed,
+          photoLinksProcessed: worker.photoLinksProcessed,
+          lotsOk: worker.lotsOk,
+          lotsMissing: worker.lotsMissing,
+          imagesUpserted: worker.imagesUpserted,
+          imagesInserted: worker.imagesInserted,
+          imagesUpdated: worker.imagesUpdated,
+          imagesStoredHd: worker.imagesStoredHd,
+          imagesStoredFull: worker.imagesStoredFull,
+          http404Count: worker.http404Count,
+          endpoint404Lots: worker.endpoint404Lots,
+          durationMs: worker.durationMs,
+        })),
+      });
+
+      if (failed.length > 0) {
+        throw new Error(failureMessage ?? "photo:cluster failed");
+      }
+      return summary;
+    } catch (error) {
+      if (error instanceof Error && error.message !== failureMessage) {
+        await completePhotoClusterRunFailure(clusterRunId, error.message);
+      } else if (!(error instanceof Error)) {
+        await completePhotoClusterRunFailure(clusterRunId, String(error));
+      }
+      throw error;
     }
-    return summary;
-  } catch (error) {
-    await completePhotoClusterRunFailure(
-      clusterRunId,
-      error instanceof Error ? error.message : String(error)
-    );
-    throw error;
+  });
+
+  if (locked === null) {
+    logger.warn("Photo cluster skipped because another run owns the lock", {
+      skipGlobalRefreshLock: Boolean(options.skipGlobalRefreshLock),
+    });
+    return null;
   }
+
+  return locked;
 }

@@ -10,12 +10,17 @@ import {
 import { mapCsvRow } from "../ingest/row-mapper";
 import { IngestCandidate, IngestCounters } from "../ingest/types";
 import { ActiveAppLock, fetchActiveAppLocks, withAppLocks } from "../locks/db-lock";
+import {
+  CSV_INGEST_LOCK,
+  LOTS_MEDIA_GATE_LOCK,
+  MANUAL_LOT_REFRESH_LOCK,
+  PIPELINE_REFRESH_LOCK,
+  getPhotoSyncLockNames,
+} from "../locks/lock-names";
 import { logger } from "../../lib/logger";
 import { clearLotImages, clearLotPhotoAttempts, resetLotPhotoState } from "../photo/photo-repository";
 import { runPhotoSyncForLot } from "../photo/photo-sync";
 import { PhotoSyncRunSummary } from "../photo/types";
-
-const MANUAL_REFRESH_LOCK_NAME = "lot_manual_refresh";
 
 export type ManualLotRefreshStatus =
   | "success"
@@ -43,11 +48,7 @@ export interface ManualLotRefreshResult {
 }
 
 function getPhotoLockNames(): string[] {
-  if (env.photo.workerTotal > 1) {
-    return Array.from({ length: env.photo.workerTotal }, (_, index) => `photo_sync_worker_${index}`);
-  }
-
-  return ["photo_sync"];
+  return getPhotoSyncLockNames(env.photo.workerTotal);
 }
 
 function getSourceDescriptor(): string {
@@ -60,15 +61,16 @@ function getSourceDescriptor(): string {
 
 function getGuardLockNames(): string[] {
   return [
-    MANUAL_REFRESH_LOCK_NAME,
-    "pipeline_refresh",
-    "csv_ingest",
+    MANUAL_LOT_REFRESH_LOCK,
+    PIPELINE_REFRESH_LOCK,
+    CSV_INGEST_LOCK,
+    LOTS_MEDIA_GATE_LOCK,
     ...getPhotoLockNames(),
   ];
 }
 
 function getGlobalRefreshLockNames(): string[] {
-  return getGuardLockNames().filter(lockName => lockName !== MANUAL_REFRESH_LOCK_NAME);
+  return getGuardLockNames().filter(lockName => lockName !== MANUAL_LOT_REFRESH_LOCK);
 }
 
 function createIngestCountersFromSingleCandidate(
@@ -109,7 +111,7 @@ function buildBlockedResult(
   blockingLocks: ActiveAppLock[]
 ): ManualLotRefreshResult {
   const blockingLockNames = blockingLocks.map(lock => lock.lockName);
-  const manualBlocked = blockingLockNames.includes(MANUAL_REFRESH_LOCK_NAME);
+  const manualBlocked = blockingLockNames.includes(MANUAL_LOT_REFRESH_LOCK);
 
   return {
     status: manualBlocked ? "blocked_by_manual_refresh" : "blocked_by_global_refresh",
@@ -153,6 +155,26 @@ export async function refreshLotFullyByNumber(lotNumber: number): Promise<Manual
     };
   }
 
+  const sourceCandidate = await findLotCandidateInSource(lotNumber);
+  if (!sourceCandidate) {
+    return {
+      status: "lot_not_found_in_source",
+      lotNumber,
+      durationMs: Date.now() - startedAt,
+      sourceUrl,
+      ingestRunId: null,
+      rowsInserted: 0,
+      rowsUpdated: 0,
+      rowsUnchanged: 0,
+      rowsUpdatedImageUrlChanged: 0,
+      rowsUpdatedOtherFields: 0,
+      clearedPhotoAttempts: 0,
+      clearedImages: 0,
+      photoSummary: null,
+      blockingLocks: [],
+    };
+  }
+
   const preflightBlockingLocks = await fetchActiveAppLocks(getGuardLockNames());
   if (preflightBlockingLocks.length > 0) {
     return buildBlockedResult(lotNumber, sourceUrl, preflightBlockingLocks);
@@ -163,22 +185,6 @@ export async function refreshLotFullyByNumber(lotNumber: number): Promise<Manual
     if (!currentLot) {
       return {
         status: "lot_not_found_in_core" as const,
-        ingestRunId: null,
-        rowsInserted: 0,
-        rowsUpdated: 0,
-        rowsUnchanged: 0,
-        rowsUpdatedImageUrlChanged: 0,
-        rowsUpdatedOtherFields: 0,
-        clearedPhotoAttempts: 0,
-        clearedImages: 0,
-        photoSummary: null,
-      };
-    }
-
-    const sourceCandidate = await findLotCandidateInSource(lotNumber);
-    if (!sourceCandidate) {
-      return {
-        status: "lot_not_found_in_source" as const,
         ingestRunId: null,
         rowsInserted: 0,
         rowsUpdated: 0,

@@ -1,6 +1,7 @@
 import { ResultSetHeader, RowDataPacket } from "mysql2";
 import env from "../../config/env";
 import { getPool } from "../../db/mysql";
+import { logger } from "../../lib/logger";
 import { resolveCsvFieldColumn } from "./csv-column-mapping";
 import { isRowChangeExcludedField } from "./row-change-exclusions";
 import { CsvFieldUpdateStat, CsvRecord, IngestCandidate, IngestCounters, UpsertBatchResult } from "./types";
@@ -44,12 +45,14 @@ export interface CoreLotSnapshot {
 }
 
 let lotsColumnsCache: Set<string> | null = null;
+const warnedUnknownCsvFields = new Set<string>();
 
 export async function createIngestRun(
   sourceUrl: string,
   runType: string = "csv_ingest"
 ): Promise<number> {
   const pool = getPool();
+  const sanitizedSourceUrl = sanitizeSource(sourceUrl);
   const [result] = await pool.query<ResultSetHeader>(
     `
       INSERT INTO \`${env.mysql.databaseCore}\`.\`ingest_runs\`
@@ -57,7 +60,7 @@ export async function createIngestRun(
       VALUES
         (?, 'running', ?)
     `,
-    [runType, sourceUrl]
+    [runType, sanitizedSourceUrl]
   );
   return result.insertId;
 }
@@ -252,12 +255,28 @@ async function ensureCsvColumnsForBatch(batch: IngestCandidate[]): Promise<Ensur
     return { mappings: [] };
   }
 
-  const mappings = Array.from(fields)
+  const resolvedFields = Array.from(fields)
     .map(field => ({
       field,
       ...resolveCsvFieldColumn(field),
-    }))
-    .filter(mapping => !mapping.usesCoreColumn && !mapping.skipColumn)
+    }));
+
+  const unknownFields = resolvedFields.filter(mapping => !mapping.isKnown);
+  const newUnknownFields = unknownFields
+    .map(mapping => mapping.field)
+    .filter(field => !warnedUnknownCsvFields.has(field));
+  if (newUnknownFields.length > 0) {
+    for (const field of newUnknownFields) {
+      warnedUnknownCsvFields.add(field);
+    }
+    logger.warn("CSV fields are not materialized into lots columns; keeping only csv_payload", {
+      fields: newUnknownFields.slice(0, 20),
+      hidden: Math.max(0, newUnknownFields.length - 20),
+    });
+  }
+
+  const mappings = resolvedFields
+    .filter(mapping => mapping.isKnown && !mapping.usesCoreColumn && !mapping.skipColumn)
     .map(({ field, column }) => ({
       field,
       column,
@@ -279,40 +298,13 @@ async function ensureCsvColumnsForBatch(batch: IngestCandidate[]): Promise<Ensur
   const existingColumnsLookup = new Set(Array.from(existingColumns).map(column => column.toLowerCase()));
   const missingColumns = mappings.filter(mapping => !existingColumnsLookup.has(mapping.column.toLowerCase()));
   if (missingColumns.length > 0) {
-    const pool = getPool();
-    const clauses = missingColumns
-      .map(mapping => `ADD COLUMN ${escapeIdentifier(mapping.column)} TEXT NULL`)
-      .join(",\n  ");
-
-    await pool.query(
-      `
-        ALTER TABLE \`${env.mysql.databaseCore}\`.\`lots\`
-        ${clauses}
-      `
+    throw new Error(
+      [
+        "Known CSV columns are missing in lots schema",
+        `columns=${missingColumns.map(mapping => mapping.column).join(",")}`,
+        "Run db:migrate before ingest.",
+      ].join("; ")
     );
-
-    for (const mapping of missingColumns) {
-      existingColumns.add(mapping.column);
-      existingColumnsLookup.add(mapping.column.toLowerCase());
-    }
-    lotsColumnsCache = existingColumns;
-
-    const setClauses = missingColumns
-      .map(
-        mapping =>
-          `${escapeIdentifier(mapping.column)} = JSON_UNQUOTE(JSON_EXTRACT(csv_payload, '$."${escapeJsonPathField(mapping.field)}"'))`
-      )
-      .join(",\n          ");
-
-    if (setClauses) {
-      await pool.query(
-        `
-          UPDATE \`${env.mysql.databaseCore}\`.\`lots\`
-          SET
-            ${setClauses}
-        `
-      );
-    }
   }
 
   return { mappings };

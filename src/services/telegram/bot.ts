@@ -30,12 +30,12 @@ function buildApiUrl(method: string): string {
   return `https://api.telegram.org/bot${env.telegram.botToken}/${method}`;
 }
 
-function normalizeCommand(commandToken: string): string {
+export function normalizeCommand(commandToken: string): string {
   const withoutSlash = commandToken.startsWith("/") ? commandToken.slice(1) : commandToken;
   return withoutSlash.split("@")[0]?.trim().toLowerCase() ?? "";
 }
 
-function parseLotNumberArg(value: string | undefined): number | null {
+export function parseLotNumberArg(value: string | undefined): number | null {
   if (!value) {
     return null;
   }
@@ -86,7 +86,7 @@ async function bootstrapOffset(): Promise<number | undefined> {
   }
 }
 
-function buildRefreshReply(result: Awaited<ReturnType<typeof refreshLotFullyByNumber>>): string {
+export function buildRefreshReply(result: Awaited<ReturnType<typeof refreshLotFullyByNumber>>): string {
   switch (result.status) {
     case "blocked_by_global_refresh":
       return [

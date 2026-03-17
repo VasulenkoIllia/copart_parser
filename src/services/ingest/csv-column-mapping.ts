@@ -2,6 +2,7 @@ interface CsvColumnResolution {
   column: string;
   usesCoreColumn: boolean;
   skipColumn: boolean;
+  isKnown: boolean;
 }
 
 interface CsvColumnSpec {
@@ -102,11 +103,13 @@ export function resolveCsvFieldColumn(field: string): CsvColumnResolution {
         column: known.column,
         usesCoreColumn: Boolean(known.usesCoreColumn),
         skipColumn: Boolean(known.skipColumn),
+        isKnown: true,
       }
     : {
         column: `csv_${fallbackCsvFieldToSnakeCase(field)}`,
         usesCoreColumn: false,
         skipColumn: false,
+        isKnown: false,
       };
 
   if (resolution.skipColumn) {

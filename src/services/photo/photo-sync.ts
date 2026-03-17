@@ -3,7 +3,8 @@ import { getProxyPoolSnapshot, httpRequest, prepareProxyPool } from "../../lib/h
 import { logger } from "../../lib/logger";
 import { normalizeCopartLotImagesUrl } from "../../lib/url-utils";
 import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
-import { withAppLock } from "../locks/db-lock";
+import { withAppLock, withAppLocks } from "../locks/db-lock";
+import { getPhotoSyncLockName, LOTS_MEDIA_GATE_LOCK, PIPELINE_REFRESH_LOCK } from "../locks/lock-names";
 import { inspectLotImage } from "./image-inspector";
 import {
   calculateBackoffMinutes,
@@ -633,11 +634,18 @@ export async function runPhotoSyncForLot(
 }
 
 export async function runPhotoSync(
-  options: { notifySuccess?: boolean; notifyError?: boolean; build404Report?: boolean } = {}
+  options: {
+    notifySuccess?: boolean;
+    notifyError?: boolean;
+    build404Report?: boolean;
+    skipGlobalRefreshLock?: boolean;
+  } = {}
 ): Promise<PhotoSyncExecutionResult> {
-  const lockName =
-    env.photo.workerTotal > 1 ? `photo_sync_worker_${env.photo.workerIndex}` : "photo_sync";
-  const locked = await withAppLock(lockName, async () => {
+  const lockName = getPhotoSyncLockName(env.photo.workerTotal, env.photo.workerIndex);
+  const skipGateLock = process.env.PHOTO_SYNC_SKIP_GATE_LOCK === "true";
+  const skipGlobalRefreshLock =
+    options.skipGlobalRefreshLock || process.env.PHOTO_SYNC_SKIP_PIPELINE_LOCK === "true";
+  const executeLocked = async () => {
     await prepareProxyPool("photo_sync_start", true);
     const proxySnapshot = getProxyPoolSnapshot();
     logger.info("Photo sync proxy pool ready", {
@@ -649,10 +657,21 @@ export async function runPhotoSync(
     });
 
     return executePhotoSync(options);
-  });
+  };
+  const lockNames = [lockName];
+  if (!skipGateLock) {
+    lockNames.unshift(LOTS_MEDIA_GATE_LOCK);
+  }
+  if (!skipGlobalRefreshLock) {
+    lockNames.unshift(PIPELINE_REFRESH_LOCK);
+  }
+  const locked =
+    lockNames.length === 1 ? await withAppLock(lockName, executeLocked) : await withAppLocks(lockNames, executeLocked);
   if (locked === null) {
     logger.warn("Photo sync skipped because another run owns the lock", {
       lockName,
+      skipGateLock,
+      skipGlobalRefreshLock,
       workerTotal: env.photo.workerTotal,
       workerIndex: env.photo.workerIndex,
     });

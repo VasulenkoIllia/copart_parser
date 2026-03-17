@@ -71,7 +71,11 @@ function describeCron(cronExpr: string): string {
   return trimmed;
 }
 
-async function safeRun(name: string, action: () => Promise<unknown>): Promise<void> {
+async function safeRun(
+  name: string,
+  action: () => Promise<unknown>,
+  options: { notifyError?: boolean } = {}
+): Promise<void> {
   const startedAt = Date.now();
   logger.info(`${name} job started`);
   try {
@@ -84,7 +88,9 @@ async function safeRun(name: string, action: () => Promise<unknown>): Promise<vo
       message: error instanceof Error ? error.message : String(error),
       durationMs: Date.now() - startedAt,
     });
-    await sendTelegramError(`${name} JOB FAILED`, error);
+    if (options.notifyError ?? true) {
+      await sendTelegramError(`${name} JOB FAILED`, error);
+    }
   }
 }
 
@@ -110,7 +116,7 @@ export async function startScheduler(): Promise<void> {
   cron.schedule(
     env.schedule.ingestCron,
     () => {
-      void safeRun("PIPELINE_REFRESH", runFullPipelineOnce);
+      void safeRun("PIPELINE_REFRESH", runFullPipelineOnce, { notifyError: false });
     },
     {
       timezone: env.app.tz,
@@ -121,8 +127,13 @@ export async function startScheduler(): Promise<void> {
     cron.schedule(
       photoRetryCron,
       () => {
-        void safeRun("PHOTO_SYNC", () =>
-          env.photo.workerTotal > 1 ? runPhotoCluster() : runPhotoSync()
+        void safeRun(
+          "PHOTO_SYNC",
+          () =>
+            env.photo.workerTotal > 1
+              ? runPhotoCluster()
+              : runPhotoSync({ notifyError: false }),
+          { notifyError: env.photo.workerTotal > 1 }
         );
       },
       {
@@ -144,7 +155,7 @@ export async function startScheduler(): Promise<void> {
   }
 
   if (env.schedule.runOnStart) {
-    await safeRun("PIPELINE_REFRESH_ON_START", runFullPipelineOnce);
+    await safeRun("PIPELINE_REFRESH_ON_START", runFullPipelineOnce, { notifyError: false });
   }
 
   if (env.telegram.sendSuccessSummary) {

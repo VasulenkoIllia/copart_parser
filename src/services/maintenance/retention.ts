@@ -2,10 +2,13 @@ import { ResultSetHeader } from "mysql2";
 import env from "../../config/env";
 import { getPool } from "../../db/mysql";
 import { logger } from "../../lib/logger";
-import { withAppLock } from "../locks/db-lock";
+import { withAppLocks } from "../locks/db-lock";
+import { LOTS_MEDIA_GATE_LOCK, PIPELINE_REFRESH_LOCK, RETENTION_CLEANUP_LOCK } from "../locks/lock-names";
+import { sendTelegramMessage } from "../notify/telegram";
 
 export interface RetentionCleanupSummary {
   deletedOrphanLotImages: number;
+  deletedOrphanPhotoFetchAttempts: number;
   deletedPhotoFetchAttempts: number;
   deletedInvalidCsvRows: number;
   deletedIngestRuns: number;
@@ -66,6 +69,7 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
   });
 
   let deletedOrphanLotImages = 0;
+  let deletedOrphanPhotoFetchAttempts = 0;
   let deletedPhotoFetchAttempts = 0;
   let deletedInvalidCsvRows = 0;
   let deletedIngestRuns = 0;
@@ -95,12 +99,33 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
     );
   }
 
+  deletedOrphanPhotoFetchAttempts = await deleteInBatches(
+    `
+      DELETE FROM \`${env.mysql.databaseMedia}\`.\`photo_fetch_attempts\`
+      WHERE id IN (
+        SELECT id
+        FROM (
+          SELECT pfa.id
+          FROM \`${env.mysql.databaseMedia}\`.\`photo_fetch_attempts\` pfa
+          LEFT JOIN \`${env.mysql.databaseCore}\`.\`lots\` l
+            ON l.lot_number = pfa.lot_number
+          WHERE l.lot_number IS NULL
+          ORDER BY pfa.id
+          LIMIT ?
+        ) orphan_attempt_ids
+      )
+    `,
+    [],
+    batchSize,
+    `${env.mysql.databaseMedia}.photo_fetch_attempts (orphan)`
+  );
+
   if (env.maintenance.photoFetchAttemptsRetentionDays > 0) {
     deletedPhotoFetchAttempts = await deleteInBatches(
       `
         DELETE FROM \`${env.mysql.databaseMedia}\`.\`photo_fetch_attempts\`
         WHERE attempted_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
-        ORDER BY id
+        ORDER BY attempted_at, id
         LIMIT ?
       `,
       [env.maintenance.photoFetchAttemptsRetentionDays],
@@ -114,7 +139,7 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
       `
         DELETE FROM \`${env.mysql.databaseCore}\`.\`invalid_csv_rows\`
         WHERE created_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
-        ORDER BY id
+        ORDER BY created_at, id
         LIMIT ?
       `,
       [env.maintenance.invalidCsvRowsRetentionDays],
@@ -129,8 +154,9 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
         DELETE FROM \`${env.mysql.databaseCore}\`.\`ingest_runs\`
         WHERE
           status IN ('success', 'failed')
-          AND COALESCE(finished_at, started_at) < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
-        ORDER BY id
+          AND finished_at IS NOT NULL
+          AND finished_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
+        ORDER BY finished_at, id
         LIMIT ?
       `,
       [env.maintenance.ingestRunsRetentionDays],
@@ -145,8 +171,9 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
         DELETE FROM \`${env.mysql.databaseCore}\`.\`photo_runs\`
         WHERE
           status IN ('success', 'failed')
-          AND COALESCE(finished_at, started_at) < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
-        ORDER BY id
+          AND finished_at IS NOT NULL
+          AND finished_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
+        ORDER BY finished_at, id
         LIMIT ?
       `,
       [env.maintenance.photoRunsRetentionDays],
@@ -161,8 +188,9 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
         DELETE FROM \`${env.mysql.databaseCore}\`.\`photo_cluster_runs\`
         WHERE
           status IN ('success', 'failed')
-          AND COALESCE(finished_at, started_at) < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
-        ORDER BY id
+          AND finished_at IS NOT NULL
+          AND finished_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
+        ORDER BY finished_at, id
         LIMIT ?
       `,
       [env.maintenance.photoClusterRunsRetentionDays],
@@ -173,6 +201,7 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
 
   const summary: RetentionCleanupSummary = {
     deletedOrphanLotImages,
+    deletedOrphanPhotoFetchAttempts,
     deletedPhotoFetchAttempts,
     deletedInvalidCsvRows,
     deletedIngestRuns,
@@ -183,6 +212,7 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
 
   logger.info("Retention cleanup finished", {
     deletedOrphanLotImages: summary.deletedOrphanLotImages,
+    deletedOrphanPhotoFetchAttempts: summary.deletedOrphanPhotoFetchAttempts,
     deletedPhotoFetchAttempts: summary.deletedPhotoFetchAttempts,
     deletedInvalidCsvRows: summary.deletedInvalidCsvRows,
     deletedIngestRuns: summary.deletedIngestRuns,
@@ -190,6 +220,23 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
     deletedPhotoClusterRuns: summary.deletedPhotoClusterRuns,
     durationMs: summary.durationMs,
   });
+
+  if (env.telegram.sendSuccessSummary) {
+    await sendTelegramMessage(
+      [
+        "[RETENTION CLEANUP] success",
+        `deleted_orphan_lot_images=${summary.deletedOrphanLotImages}`,
+        `deleted_orphan_photo_fetch_attempts=${summary.deletedOrphanPhotoFetchAttempts}`,
+        `deleted_photo_fetch_attempts=${summary.deletedPhotoFetchAttempts}`,
+        `deleted_invalid_csv_rows=${summary.deletedInvalidCsvRows}`,
+        `deleted_ingest_runs=${summary.deletedIngestRuns}`,
+        `deleted_photo_runs=${summary.deletedPhotoRuns}`,
+        `deleted_photo_cluster_runs=${summary.deletedPhotoClusterRuns}`,
+        `duration_ms=${summary.durationMs}`,
+      ].join("\n")
+    );
+  }
+
   return summary;
 }
 
@@ -202,7 +249,10 @@ export async function runRetentionCleanup(
     return { executed: false };
   }
 
-  const locked = await withAppLock("retention_cleanup", executeRetentionCleanup);
+  const locked = await withAppLocks(
+    [PIPELINE_REFRESH_LOCK, RETENTION_CLEANUP_LOCK, LOTS_MEDIA_GATE_LOCK],
+    executeRetentionCleanup
+  );
   if (locked === null) {
     logger.warn("Retention cleanup skipped because another run owns the lock");
     return { executed: false };

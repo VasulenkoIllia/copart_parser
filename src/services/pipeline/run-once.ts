@@ -2,6 +2,7 @@ import env from "../../config/env";
 import { logger } from "../../lib/logger";
 import { withAppLock } from "../locks/db-lock";
 import { runCsvIngest } from "../ingest/csv-ingest";
+import { PIPELINE_REFRESH_LOCK } from "../locks/lock-names";
 import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { runPhotoSync } from "../photo/photo-sync";
 import { runPhotoCluster } from "../photo/photo-cluster";
@@ -33,31 +34,17 @@ function formatDuration(durationMs: number): string {
   return `${minutes} хв ${seconds} с`;
 }
 
-function buildCsvFieldUpdatesMessage(stats: CsvFieldUpdateStat[]): string {
+function summarizeUpdatedFields(stats: CsvFieldUpdateStat[], limit: number): string {
   if (stats.length === 0) {
-    return "CSV поля, які змінювались\nнемає";
+    return "немає";
   }
 
-  const lines = ["CSV поля, які змінювались (кількість лотів):"];
-  let currentLength = lines[0].length;
-  let hidden = 0;
-
-  for (const stat of stats) {
-    const line = `${stat.field}: ${formatCount(stat.lotsUpdated)}`;
-    const nextLength = currentLength + 1 + line.length;
-    if (nextLength > 3500) {
-      hidden += 1;
-      continue;
-    }
-    lines.push(line);
-    currentLength = nextLength;
+  const visible = stats.slice(0, limit).map(stat => `${stat.field}=${formatCount(stat.lotsUpdated)}`);
+  if (stats.length > limit) {
+    visible.push(`+${formatCount(stats.length - limit)} полів`);
   }
 
-  if (hidden > 0) {
-    lines.push(`... +${formatCount(hidden)} полів`);
-  }
-
-  return lines.join("\n");
+  return visible.join(", ");
 }
 
 function buildPipelineSuccessMessage(
@@ -88,24 +75,17 @@ function buildPipelineSuccessMessage(
     `Лотів у CSV: ${formatCount(ingest.rowsValid)}`,
     `Нових лотів: ${formatCount(ingest.rowsInserted)}`,
     `Оновлених лотів: ${formatCount(ingest.rowsUpdated)}`,
+    `Без змін: ${formatCount(ingest.rowsUnchanged)}`,
     `Оновлено зі зміною image_url: ${formatCount(ingest.rowsUpdatedImageUrlChanged)}`,
+    `Оновлено по інших полях: ${formatCount(ingest.rowsUpdatedOtherFields)}`,
     `Некоректних рядків: ${formatCount(ingest.rowsInvalid)}`,
+    `Некоректних рядків %: ${formatPercent(ingest.rowsInvalid, ingest.rowsTotal)}`,
     `Видалено зі snapshot: ${formatCount(ingest.prunedLots)}`,
     `Видалено orphan-фото: ${formatCount(ingest.prunedOrphanLotImages)}`,
+    `Гідровано з media cache: ${formatCount(ingest.hydratedLotsFromMedia)}`,
+    `Змінені CSV поля: ${formatCount(ingest.updatedFields.length)}`,
+    `Топ зміни: ${summarizeUpdatedFields(ingest.updatedFields, 5)}`,
   ];
-
-  if (ingest.updatedFields.length === 0) {
-    csvLines.push("Зміни по CSV полях: немає");
-  } else {
-    const topUpdatedFields = ingest.updatedFields.slice(0, 10);
-    csvLines.push(`Зміни по CSV полях: ${formatCount(ingest.updatedFields.length)} полів`);
-    for (const stat of topUpdatedFields) {
-      csvLines.push(`Поле "${stat.field}": ${formatCount(stat.lotsUpdated)} лотів`);
-    }
-    if (ingest.updatedFields.length > topUpdatedFields.length) {
-      csvLines.push(`Інші поля: ${formatCount(ingest.updatedFields.length - topUpdatedFields.length)}`);
-    }
-  }
 
   const photoLines = [
     `Кандидатів на photo-stage: ${formatCount(photoScanned)}`,
@@ -149,6 +129,7 @@ async function executeFullPipelineOnce(): Promise<void> {
       notifySuccess: false,
       notifyError: false,
       buildInvalidRowsReport: false,
+      skipGlobalRefreshLock: true,
     });
     if (!ingestResult.executed || !ingestResult.summary) {
       logger.warn("Pipeline run-once aborted because CSV ingest lock was unavailable");
@@ -156,12 +137,16 @@ async function executeFullPipelineOnce(): Promise<void> {
     }
     const photoResult =
       env.photo.workerTotal > 1
-        ? await runPhotoCluster({ build404Report: env.telegram.sendSuccessSummary })
+        ? await runPhotoCluster({
+            build404Report: env.telegram.sendSuccessSummary,
+            skipGlobalRefreshLock: true,
+          })
         : (
             await runPhotoSync({
               notifySuccess: false,
               notifyError: false,
               build404Report: env.telegram.sendSuccessSummary,
+              skipGlobalRefreshLock: true,
             })
           ).summary;
 
@@ -180,7 +165,6 @@ async function executeFullPipelineOnce(): Promise<void> {
     });
     if (env.telegram.sendSuccessSummary) {
       await sendTelegramMessage(buildPipelineSuccessMessage(ingestResult.summary, photoResult, totalDurationMs));
-      await sendTelegramMessage(buildCsvFieldUpdatesMessage(ingestResult.summary.updatedFields));
       await sendTelegramDocuments(
         reportFiles.map(file => ({
           path: file.path,
@@ -201,7 +185,7 @@ async function executeFullPipelineOnce(): Promise<void> {
 }
 
 export async function runFullPipelineOnce(): Promise<void> {
-  const locked = await withAppLock("pipeline_refresh", executeFullPipelineOnce);
+  const locked = await withAppLock(PIPELINE_REFRESH_LOCK, executeFullPipelineOnce);
   if (locked === null) {
     logger.warn("Pipeline run-once skipped because another pipeline run owns the lock");
   }
