@@ -368,6 +368,13 @@ async function prepareDatabase() {
   throw new Error(`Unsupported PHOTO_TEST_DB_PREPARE mode: ${DB_PREPARE_MODE}`);
 }
 
+async function resetRuntimeTables() {
+  log("Resetting runtime tables for isolated case", {
+    mode: "db:reset",
+  });
+  await npmCommand("db:reset");
+}
+
 async function connectDb() {
   return mysql.createPool({
     host: MYSQL_HOST,
@@ -722,11 +729,14 @@ async function main() {
 
       const rows = [...oldRows, ...newRows];
       const csvPath = path.join(casesDir, `${item.id}.csv`);
+      const baselineOldCsvPath = path.join(casesDir, `${item.id}.baseline-old.csv`);
       await writeCsv(csvPath, source.headerLine, rows);
+      await writeCsv(baselineOldCsvPath, source.headerLine, oldRows);
 
       runnableCases.push({
         ...item,
         csvPath,
+        baselineOldCsvPath,
         oldLotNumbers: oldRows.map(row => row.lotNumber),
         newLotNumbers: newRows.map(row => row.lotNumber),
       });
@@ -751,7 +761,51 @@ async function main() {
         old: testCase.oldCount,
         new: testCase.newCount,
         csvPath: testCase.csvPath,
+        baselineOldCsvPath: testCase.baselineOldCsvPath,
       });
+
+      await resetRuntimeTables();
+
+      if (testCase.oldCount > 0) {
+        const baselineIngestBefore = await fetchLastRunId(pool, MYSQL_CORE_DB, "ingest_runs");
+        const baselinePhotoBefore = await fetchLastRunId(pool, MYSQL_CORE_DB, "photo_runs");
+
+        await runCommand(process.execPath, ["dist/index.js", "ingest:csv"], {
+          ...BASE_ENV_OVERRIDES,
+          CSV_LOCAL_FILE: testCase.baselineOldCsvPath,
+          INGEST_MAX_ROWS: "0",
+        });
+
+        const baselineIngestAfter = await fetchLastRunId(pool, MYSQL_CORE_DB, "ingest_runs");
+        if (baselineIngestAfter <= baselineIngestBefore) {
+          throw new Error(`Case ${testCase.id}: baseline ingest run was not created`);
+        }
+
+        await runCommand(process.execPath, ["dist/index.js", "photo:sync"], {
+          ...BASE_ENV_OVERRIDES,
+          PHOTO_BATCH_SIZE: String(Math.max(testCase.oldCount, 10)),
+          PHOTO_PROGRESS_EVERY_LOTS: "10",
+        });
+
+        const baselinePhotoAfter = await fetchLastRunId(pool, MYSQL_CORE_DB, "photo_runs");
+        if (baselinePhotoAfter <= baselinePhotoBefore) {
+          throw new Error(`Case ${testCase.id}: baseline photo run was not created`);
+        }
+
+        const baselineOldLotsWithMedia = await fetchOldLotsWithMedia(pool, testCase.oldLotNumbers);
+        if (baselineOldLotsWithMedia.length !== testCase.oldCount) {
+          throw new Error(
+            `Case ${testCase.id}: baseline old lots were not fully hydrated with hd media. expected=${testCase.oldCount}, actual=${baselineOldLotsWithMedia.length}`
+          );
+        }
+
+        log(`Case ${testCase.id} baseline ready`, {
+          old: testCase.oldCount,
+          baselineIngestRunId: baselineIngestAfter,
+          baselinePhotoRunId: baselinePhotoAfter,
+          baselineOldLotsWithMedia: baselineOldLotsWithMedia.length,
+        });
+      }
 
       const ingestBefore = await fetchLastRunId(pool, MYSQL_CORE_DB, "ingest_runs");
       const photoBefore = await fetchLastRunId(pool, MYSQL_CORE_DB, "photo_runs");

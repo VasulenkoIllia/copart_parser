@@ -78,6 +78,9 @@ interface AppEnv {
     minWidth: number;
     minHeight: number;
     minContentLength: number;
+    fallbackFullMinWidth: number;
+    fallbackFullMinHeight: number;
+    fallbackFullMinContentLength: number;
     acceptedExtensions: string[];
     retryBaseDelayMinutes: number;
     retryMaxDelayMinutes: number;
@@ -312,6 +315,9 @@ const env: AppEnv = {
     minWidth: toInt("PHOTO_MIN_WIDTH", 1200),
     minHeight: toInt("PHOTO_MIN_HEIGHT", 900),
     minContentLength: toInt("PHOTO_MIN_CONTENT_LENGTH", 120_000),
+    fallbackFullMinWidth: toInt("PHOTO_FALLBACK_FULL_MIN_WIDTH", 900),
+    fallbackFullMinHeight: toInt("PHOTO_FALLBACK_FULL_MIN_HEIGHT", 675),
+    fallbackFullMinContentLength: toInt("PHOTO_FALLBACK_FULL_MIN_CONTENT_LENGTH", 80_000),
     acceptedExtensions: parseList("PHOTO_ACCEPTED_EXTENSIONS"),
     retryBaseDelayMinutes: toInt("PHOTO_RETRY_BASE_DELAY_MINUTES", 30),
     retryMaxDelayMinutes: toInt("PHOTO_RETRY_MAX_DELAY_MINUTES", 1440),
@@ -418,6 +424,20 @@ if (env.photo.workerIndex < 0 || env.photo.workerIndex >= env.photo.workerTotal)
 
 if (env.photo.progressEveryLots < 1) {
   throw new Error("PHOTO_PROGRESS_EVERY_LOTS must be >= 1");
+}
+
+if (env.photo.minWidth < 1 || env.photo.minHeight < 1 || env.photo.minContentLength < 0) {
+  throw new Error("PHOTO_MIN_WIDTH/PHOTO_MIN_HEIGHT must be >= 1 and PHOTO_MIN_CONTENT_LENGTH must be >= 0");
+}
+
+if (
+  env.photo.fallbackFullMinWidth < 1 ||
+  env.photo.fallbackFullMinHeight < 1 ||
+  env.photo.fallbackFullMinContentLength < 0
+) {
+  throw new Error(
+    "PHOTO_FALLBACK_FULL_MIN_WIDTH/PHOTO_FALLBACK_FULL_MIN_HEIGHT must be >= 1 and PHOTO_FALLBACK_FULL_MIN_CONTENT_LENGTH must be >= 0"
+  );
 }
 
 if (env.proxy.preflightTimeoutMs < 1000) {

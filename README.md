@@ -306,9 +306,9 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 
 ### Фото
 
-- Парсити URL з endpoint `lotImages` і перевіряти через HEAD/GET тільки `hd` варіанти.
+- Парсити URL з endpoint `lotImages`: спочатку перевіряти `hd`, а якщо валідних `hd` немає — fallback на `full`.
 - У `copart_media.lot_images` зберігати тільки якісні full-size фото.
-- Поточний performance-профіль: **перевіряються і зберігаються тільки `hd` фото** (`thumb`/`video`/не-HD ігноруються).
+- Поточний performance-профіль: пріоритет у `hd`; `full` використовується тільки як fallback, `thumb`/`video` ігноруються.
 - Додано кеш перевірки по `url_hash`: якщо URL уже був `ok + full_size`, повторний `GET` пропускається.
 - У `photo_fetch_attempts` логуються тільки `404` і помилки (`error`/non-2xx), успішні `2xx/206` більше не засмічують таблицю.
 - `check_status = ok`,
@@ -318,6 +318,7 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - Запис фото працює в merge-режимі: вже знайдені good фото не видаляються при повторних прогонах.
 - Всі спроби запитів і помилки зберігати в `copart_media.photo_fetch_attempts`.
 - Кандидати на `photo:sync` визначаються так: лот є в актуальному `copart_core.lots`, але для нього ще немає жодного валідного `hd + full-size` фото в `copart_media.lot_images`.
+- Якщо `hd` не пройшов валідацію, у media може бути збережений `full` fallback; лот при цьому лишається в retry-потоці, щоб наступні рани могли догрузити `hd`.
 
 ### Правило "повні фото"
 

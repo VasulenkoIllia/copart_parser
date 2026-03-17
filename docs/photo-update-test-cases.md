@@ -22,13 +22,26 @@ npm run test:photo-update
 - `PHOTO_TEST_SOURCE_FILE=/path/to/local.csv` (опційно, щоб не качати remote)
 - `PHOTO_TEST_HTTP_MODE=direct|proxy|mixed`
 
-## Seed фаза
+## Discovery seed
 
-Перед матрицею виконується seed:
+Перед матрицею виконується discovery seed:
 
 1. Беруться перші `PHOTO_TEST_OLD_POOL_SIZE` лотів.
 2. Запускається `ingest:csv` + `photo:sync`.
 3. У `old`-пул потрапляють тільки лоти, для яких уже є `hd + full-size` у `copart_media.lot_images`.
+
+Ця фаза потрібна лише для побудови стабільного пулу `old`-лотів, які реально мають валідні `hd` фото.
+
+## Ізоляція кейсів
+
+Після появи негайного orphan-cleanup у `copart_media.lot_images` кейси більше не можуть ділити один runtime-state між собою, бо media старих лотів видаляється разом із prune з core.
+
+Тому тепер кожен кейс виконується ізольовано:
+
+1. Робиться `db:reset`.
+2. Якщо `old > 0`, проганяється baseline CSV тільки з `old`-лотами.
+3. Для baseline запускається `ingest:csv` + `photo:sync`, щоб відтворити стан "лот уже має валідні hd фото".
+4. Лише після цього запускається основний CSV кейсу `old + new`.
 
 ## Матриця кейсів (default)
 
@@ -80,6 +93,7 @@ npm run test:photo-update
 - `oldAttempts`: кількість error/404 attempts для old-лотів у вікні цього run.
 - `newTouched`, `newAttempts`: аналогічно для new.
 - `oldMediaBefore/After`, `newMediaBefore/After`: приріст валідного `hd` в media.
+- baseline також перевіряє, що всі `old`-лоти справді відновили `hd` перед основним run.
 
 ## Критерії PASS/FAIL
 

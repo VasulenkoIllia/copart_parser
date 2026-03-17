@@ -71,6 +71,14 @@ function buildPipelineSuccessMessage(
     photo.mode === "cluster" ? photo.totalPhotoLinksProcessed : photo.photoLinksProcessed;
   const photoOk = photo.mode === "cluster" ? photo.totalLotsOk : photo.lotsOk;
   const photoMissing = photo.mode === "cluster" ? photo.totalLotsMissing : photo.lotsMissing;
+  const photoImagesInserted =
+    photo.mode === "cluster" ? photo.totalImagesInserted : photo.imagesInserted;
+  const photoImagesUpdated =
+    photo.mode === "cluster" ? photo.totalImagesUpdated : photo.imagesUpdated;
+  const photoImagesStoredHd =
+    photo.mode === "cluster" ? photo.totalImagesStoredHd : photo.imagesStoredHd;
+  const photoImagesStoredFull =
+    photo.mode === "cluster" ? photo.totalImagesStoredFull : photo.imagesStoredFull;
   const endpoint404Lots =
     photo.mode === "cluster" ? photo.totalEndpoint404Lots : photo.endpoint404Lots;
   const http404Total = photo.mode === "cluster" ? photo.totalHttp404Count : photo.http404Count;
@@ -105,6 +113,10 @@ function buildPipelineSuccessMessage(
     `Опрацьовано фото-посилань: ${formatCount(photoLinksProcessed)}`,
     `З валідними фото: ${formatCount(photoOk)} (${formatPercent(photoOk, photoProcessed)})`,
     `Без валідних фото: ${formatCount(photoMissing)} (${formatPercent(photoMissing, photoProcessed)})`,
+    `Нових фото в БД: ${formatCount(photoImagesInserted)}`,
+    `Оновлених фото в БД: ${formatCount(photoImagesUpdated)}`,
+    `Збережено HD: ${formatCount(photoImagesStoredHd)}`,
+    `Збережено full fallback: ${formatCount(photoImagesStoredFull)}`,
     `Лотів з endpoint 404: ${formatCount(endpoint404Lots)}`,
     `Усього HTTP 404: ${formatCount(http404Total)}`,
   ];

@@ -50,7 +50,11 @@ function createCounters(): PhotoRunCounters {
     lotsOk: 0,
     lotsMissing: 0,
     imagesUpserted: 0,
+    imagesInserted: 0,
+    imagesUpdated: 0,
     imagesFullSize: 0,
+    imagesStoredHd: 0,
+    imagesStoredFull: 0,
     imagesBadQuality: 0,
     http404Count: 0,
     endpoint404Lots: 0,
@@ -64,19 +68,20 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function parseEndpointPayload(
   lotNumber: number,
   payload: unknown
-): { links: ParsedLotImageLink[]; imgCount: number } {
+): { hdLinks: ParsedLotImageLink[]; fullLinks: ParsedLotImageLink[]; imgCount: number } {
   if (!isObject(payload)) {
-    return { links: [], imgCount: 0 };
+    return { hdLinks: [], fullLinks: [], imgCount: 0 };
   }
 
   const data = payload as LotImagesEndpointPayload;
   const imgCount = typeof data.imgCount === "number" ? data.imgCount : 0;
 
   if (!Array.isArray(data.lotImages)) {
-    return { links: [], imgCount };
+    return { hdLinks: [], fullLinks: [], imgCount };
   }
 
-  const map = new Map<string, ParsedLotImageLink>();
+  const hdMap = new Map<string, ParsedLotImageLink>();
+  const fullMap = new Map<string, ParsedLotImageLink>();
 
   for (const lotImage of data.lotImages) {
     const sequence = Number.isFinite(Number(lotImage.sequence)) ? Number(lotImage.sequence) : 0;
@@ -99,14 +104,14 @@ function parseEndpointPayload(
         Boolean(link.isEngineSound)
       );
 
-      // Performance mode: process only HD photos.
-      if (variant !== "hd") {
+      if (variant !== "hd" && variant !== "full") {
         continue;
       }
 
       const key = `${sequence}:${cleanUrl}`;
-      if (!map.has(key)) {
-        map.set(key, {
+      const targetMap = variant === "hd" ? hdMap : fullMap;
+      if (!targetMap.has(key)) {
+        targetMap.set(key, {
           lotNumber,
           sequence,
           variant,
@@ -116,7 +121,11 @@ function parseEndpointPayload(
     }
   }
 
-  return { links: Array.from(map.values()), imgCount };
+  return {
+    hdLinks: Array.from(hdMap.values()),
+    fullLinks: Array.from(fullMap.values()),
+    imgCount,
+  };
 }
 
 async function runWithConcurrency<T>(
@@ -247,7 +256,8 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
     }
 
     const parsed = parseEndpointPayload(candidate.lotNumber, response.data);
-    if (parsed.links.length === 0 || parsed.imgCount === 0) {
+    const supportedLinksCount = parsed.hdLinks.length + parsed.fullLinks.length;
+    if (supportedLinksCount === 0 || parsed.imgCount === 0) {
       const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
       await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
       logResult({
@@ -256,7 +266,8 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
         reason: "empty_payload",
         endpointStatus,
         imgCount: parsed.imgCount,
-        parsedLinks: parsed.links.length,
+        parsedHdLinks: parsed.hdLinks.length,
+        parsedFullLinks: parsed.fullLinks.length,
         backoffMinutes: backoff,
       });
       counters.lotsProcessed += 1;
@@ -264,39 +275,84 @@ async function processLot(candidate: PhotoLotCandidate, counters: PhotoRunCounte
       return;
     }
 
-    const checkedLinks = await inspectParsedLinks(parsed.links);
-    counters.photoLinksProcessed += checkedLinks.length;
-    const storageImages = selectImagesForStorage(checkedLinks);
-    await replaceLotImages(candidate.lotNumber, storageImages, "merge");
+    const checkedHdLinks = await inspectParsedLinks(parsed.hdLinks);
+    counters.photoLinksProcessed += checkedHdLinks.length;
+
+    let checkedLinks = checkedHdLinks;
+    let storageImages = selectImagesForStorage(checkedHdLinks).filter(image => image.variant === "hd");
+    let usedFallbackFull = false;
+
+    if (storageImages.length === 0 && parsed.fullLinks.length > 0) {
+      const checkedFullLinks = await inspectParsedLinks(parsed.fullLinks);
+      counters.photoLinksProcessed += checkedFullLinks.length;
+      checkedLinks = [...checkedHdLinks, ...checkedFullLinks];
+      storageImages = selectImagesForStorage(checkedFullLinks).filter(image => image.variant === "full");
+      usedFallbackFull = storageImages.length > 0;
+    }
+
+    const replaceSummary = await replaceLotImages(candidate.lotNumber, storageImages, "merge");
 
     const imageStats = summarizeImageChecks(checkedLinks);
 
     counters.imagesUpserted += storageImages.length;
+    counters.imagesInserted += replaceSummary.inserted;
+    counters.imagesUpdated += replaceSummary.updated;
     counters.imagesFullSize += storageImages.length;
+    counters.imagesStoredHd += storageImages.filter(image => image.variant === "hd").length;
+    counters.imagesStoredFull += storageImages.filter(image => image.variant === "full").length;
     counters.imagesBadQuality += imageStats.badQuality;
     counters.http404Count += imageStats.notFound;
 
     if (storageImages.length > 0) {
-      await markLotPhotoOk(candidate.lotNumber);
-      logResult({
-        lotNumber: candidate.lotNumber,
-        status: "ok",
-        endpointStatus,
-        parsedLinks: parsed.links.length,
-        storedGoodImages: storageImages.length,
-        badQuality: imageStats.badQuality,
-        notFound: imageStats.notFound,
-      });
-      counters.lotsOk += 1;
+      const storedVariant = storageImages[0]?.variant ?? "unknown";
+      if (storedVariant === "hd") {
+        await markLotPhotoOk(candidate.lotNumber);
+        logResult({
+          lotNumber: candidate.lotNumber,
+          status: "ok",
+          endpointStatus,
+          parsedHdLinks: parsed.hdLinks.length,
+          parsedFullLinks: parsed.fullLinks.length,
+          storedGoodImages: storageImages.length,
+          storedVariant,
+          insertedImages: replaceSummary.inserted,
+          updatedImages: replaceSummary.updated,
+          badQuality: imageStats.badQuality,
+          notFound: imageStats.notFound,
+        });
+        counters.lotsOk += 1;
+      } else {
+        const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
+        // Keep the lot in retry flow so a later run can still upgrade stored full images to HD.
+        await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
+        logResult({
+          lotNumber: candidate.lotNumber,
+          status: "missing",
+          reason: "stored_full_fallback",
+          endpointStatus,
+          parsedHdLinks: parsed.hdLinks.length,
+          parsedFullLinks: parsed.fullLinks.length,
+          storedGoodImages: storageImages.length,
+          storedVariant,
+          usedFallbackFull,
+          insertedImages: replaceSummary.inserted,
+          updatedImages: replaceSummary.updated,
+          badQuality: imageStats.badQuality,
+          notFound: imageStats.notFound,
+          backoffMinutes: backoff,
+        });
+        counters.lotsMissing += 1;
+      }
     } else {
       const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
       await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
       logResult({
         lotNumber: candidate.lotNumber,
         status: "missing",
-        reason: "no_valid_hd_images",
+        reason: "no_valid_hd_or_full_images",
         endpointStatus,
-        parsedLinks: parsed.links.length,
+        parsedHdLinks: parsed.hdLinks.length,
+        parsedFullLinks: parsed.fullLinks.length,
         storedGoodImages: storageImages.length,
         badQuality: imageStats.badQuality,
         notFound: imageStats.notFound,
@@ -370,6 +426,10 @@ async function executePhotoSync(
           lotsOk: counters.lotsOk,
           lotsMissing: counters.lotsMissing,
           imagesUpserted: counters.imagesUpserted,
+          imagesInserted: counters.imagesInserted,
+          imagesUpdated: counters.imagesUpdated,
+          imagesStoredHd: counters.imagesStoredHd,
+          imagesStoredFull: counters.imagesStoredFull,
           http404Count: counters.http404Count,
           elapsedSec,
           lotsPerMin: Number(((counters.lotsProcessed / elapsedSec) * 60).toFixed(2)),
@@ -393,7 +453,11 @@ async function executePhotoSync(
       lotsOk: counters.lotsOk,
       lotsMissing: counters.lotsMissing,
       imagesUpserted: counters.imagesUpserted,
+      imagesInserted: counters.imagesInserted,
+      imagesUpdated: counters.imagesUpdated,
       imagesFullSize: counters.imagesFullSize,
+      imagesStoredHd: counters.imagesStoredHd,
+      imagesStoredFull: counters.imagesStoredFull,
       imagesBadQuality: counters.imagesBadQuality,
       http404Count: counters.http404Count,
       durationMs,
@@ -414,7 +478,11 @@ async function executePhotoSync(
       lotsOk: counters.lotsOk,
       lotsMissing: counters.lotsMissing,
       imagesUpserted: counters.imagesUpserted,
+      imagesInserted: counters.imagesInserted,
+      imagesUpdated: counters.imagesUpdated,
       imagesFullSize: counters.imagesFullSize,
+      imagesStoredHd: counters.imagesStoredHd,
+      imagesStoredFull: counters.imagesStoredFull,
       imagesBadQuality: counters.imagesBadQuality,
       http404Count: counters.http404Count,
       endpoint404Lots: counters.endpoint404Lots,
@@ -433,6 +501,10 @@ async function executePhotoSync(
           `lots_ok=${counters.lotsOk}`,
           `lots_missing=${counters.lotsMissing}`,
           `images_upserted=${counters.imagesUpserted}`,
+          `images_inserted=${counters.imagesInserted}`,
+          `images_updated=${counters.imagesUpdated}`,
+          `images_stored_hd=${counters.imagesStoredHd}`,
+          `images_stored_full=${counters.imagesStoredFull}`,
           `images_full_size=${counters.imagesFullSize}`,
           `images_bad_quality=${counters.imagesBadQuality}`,
           `http_404_count=${counters.http404Count}`,

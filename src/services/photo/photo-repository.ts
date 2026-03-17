@@ -37,6 +37,21 @@ interface CachedImageRow extends RowDataPacket {
   url_hash: string;
 }
 
+interface StoredLotImageRow extends RowDataPacket {
+  sequence: number;
+  variant: ImageVariant;
+  url: string;
+  http_status: number | null;
+  content_type: string | null;
+  content_length: number | null;
+  width: number | null;
+  height: number | null;
+  is_full_size: number;
+  check_status: ImageCheckStatus;
+  last_checked_at: Date | string | null;
+  url_hash: string;
+}
+
 interface ClusterSummaryRow extends RowDataPacket {
   workers_finished: number | null;
   workers_succeeded: number | null;
@@ -47,7 +62,11 @@ interface ClusterSummaryRow extends RowDataPacket {
   total_lots_ok: number | null;
   total_lots_missing: number | null;
   total_images_upserted: number | null;
+  total_images_inserted: number | null;
+  total_images_updated: number | null;
   total_images_full_size: number | null;
+  total_images_stored_hd: number | null;
+  total_images_stored_full: number | null;
   total_images_bad_quality: number | null;
   total_http_404_count: number | null;
   total_endpoint_404_lots: number | null;
@@ -64,7 +83,11 @@ interface ClusterWorkerRow extends RowDataPacket {
   lots_ok: number;
   lots_missing: number;
   images_upserted: number;
+  images_inserted: number | null;
+  images_updated: number | null;
   images_full_size: number;
+  images_stored_hd: number | null;
+  images_stored_full: number | null;
   images_bad_quality: number;
   http_404_count: number;
   endpoint_404_lots: number | null;
@@ -99,6 +122,11 @@ export interface Photo404AttemptReportRow {
   attemptedAt: Date | null;
 }
 
+export interface ReplaceLotImagesSummary {
+  inserted: number;
+  updated: number;
+}
+
 function parseOptionalClusterRunId(): number | null {
   const raw = process.env.PHOTO_CLUSTER_RUN_ID;
   if (!raw || !raw.trim()) {
@@ -116,6 +144,18 @@ function toDate(value: Date | string | null): Date | null {
     return null;
   }
   return new Date(value);
+}
+
+function datesEqual(left: Date | string | null, right: Date | string | null): boolean {
+  const leftDate = toDate(left);
+  const rightDate = toDate(right);
+  if (!leftDate && !rightDate) {
+    return true;
+  }
+  if (!leftDate || !rightDate) {
+    return false;
+  }
+  return leftDate.getTime() === rightDate.getTime();
 }
 
 async function fetchPhoto404AttemptsByWindow(
@@ -271,7 +311,11 @@ export async function completePhotoRunSuccess(
           'workerIndex', ?,
           'clusterRunId', ?,
           'photoLinksProcessed', ?,
-          'endpoint404Lots', ?
+          'endpoint404Lots', ?,
+          'imagesInserted', ?,
+          'imagesUpdated', ?,
+          'imagesStoredHd', ?,
+          'imagesStoredFull', ?
         )
       WHERE id = ?
     `,
@@ -291,6 +335,10 @@ export async function completePhotoRunSuccess(
       parseOptionalClusterRunId(),
       counters.photoLinksProcessed,
       counters.endpoint404Lots,
+      counters.imagesInserted,
+      counters.imagesUpdated,
+      counters.imagesStoredHd,
+      counters.imagesStoredFull,
       runId,
     ]
   );
@@ -325,7 +373,11 @@ export async function completePhotoRunFailure(
           'workerIndex', ?,
           'clusterRunId', ?,
           'photoLinksProcessed', ?,
-          'endpoint404Lots', ?
+          'endpoint404Lots', ?,
+          'imagesInserted', ?,
+          'imagesUpdated', ?,
+          'imagesStoredHd', ?,
+          'imagesStoredFull', ?
         )
       WHERE id = ?
     `,
@@ -346,6 +398,10 @@ export async function completePhotoRunFailure(
       parseOptionalClusterRunId(),
       counters.photoLinksProcessed,
       counters.endpoint404Lots,
+      counters.imagesInserted,
+      counters.imagesUpdated,
+      counters.imagesStoredHd,
+      counters.imagesStoredFull,
       runId,
     ]
   );
@@ -374,7 +430,39 @@ export async function fetchPhotoClusterRunSummary(
         COALESCE(SUM(lots_ok), 0) AS total_lots_ok,
         COALESCE(SUM(lots_missing), 0) AS total_lots_missing,
         COALESCE(SUM(images_upserted), 0) AS total_images_upserted,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.imagesInserted')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_images_inserted,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.imagesUpdated')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_images_updated,
         COALESCE(SUM(images_full_size), 0) AS total_images_full_size,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.imagesStoredHd')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_images_stored_hd,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.imagesStoredFull')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_images_stored_full,
         COALESCE(SUM(images_bad_quality), 0) AS total_images_bad_quality,
         COALESCE(SUM(http_404_count), 0) AS total_http_404_count,
         COALESCE(
@@ -402,7 +490,11 @@ export async function fetchPhotoClusterRunSummary(
     totalLotsOk: Number(row?.total_lots_ok ?? 0),
     totalLotsMissing: Number(row?.total_lots_missing ?? 0),
     totalImagesUpserted: Number(row?.total_images_upserted ?? 0),
+    totalImagesInserted: Number(row?.total_images_inserted ?? 0),
+    totalImagesUpdated: Number(row?.total_images_updated ?? 0),
     totalImagesFullSize: Number(row?.total_images_full_size ?? 0),
+    totalImagesStoredHd: Number(row?.total_images_stored_hd ?? 0),
+    totalImagesStoredFull: Number(row?.total_images_stored_full ?? 0),
     totalImagesBadQuality: Number(row?.total_images_bad_quality ?? 0),
     totalHttp404Count: Number(row?.total_http_404_count ?? 0),
     totalEndpoint404Lots: Number(row?.total_endpoint_404_lots ?? 0),
@@ -428,7 +520,19 @@ export async function fetchPhotoClusterRunWorkers(
         lots_ok,
         lots_missing,
         images_upserted,
+        CAST(
+          COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.imagesInserted')), '0') AS UNSIGNED
+        ) AS images_inserted,
+        CAST(
+          COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.imagesUpdated')), '0') AS UNSIGNED
+        ) AS images_updated,
         images_full_size,
+        CAST(
+          COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.imagesStoredHd')), '0') AS UNSIGNED
+        ) AS images_stored_hd,
+        CAST(
+          COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.imagesStoredFull')), '0') AS UNSIGNED
+        ) AS images_stored_full,
         images_bad_quality,
         http_404_count,
         CAST(
@@ -456,7 +560,11 @@ export async function fetchPhotoClusterRunWorkers(
     lotsOk: Number(row.lots_ok),
     lotsMissing: Number(row.lots_missing),
     imagesUpserted: Number(row.images_upserted),
+    imagesInserted: Number(row.images_inserted ?? 0),
+    imagesUpdated: Number(row.images_updated ?? 0),
     imagesFullSize: Number(row.images_full_size),
+    imagesStoredHd: Number(row.images_stored_hd ?? 0),
+    imagesStoredFull: Number(row.images_stored_full ?? 0),
     imagesBadQuality: Number(row.images_bad_quality),
     http404Count: Number(row.http_404_count),
     endpoint404Lots: Number(row.endpoint_404_lots ?? 0),
@@ -716,7 +824,7 @@ export async function fetchCachedGoodImages(
       FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
       WHERE
         lot_number = ?
-        AND variant = 'hd'
+        AND variant IN ('hd', 'full')
         AND check_status = 'ok'
         AND is_full_size = 1
         AND url_hash IN (${placeholders})
@@ -763,7 +871,7 @@ export async function replaceLotImages(
   lotNumber: number,
   images: CheckedLotImage[],
   mode: "replace" | "merge" = "replace"
-): Promise<void> {
+): Promise<ReplaceLotImagesSummary> {
   const pool = getPool();
 
   if (images.length === 0) {
@@ -773,12 +881,16 @@ export async function replaceLotImages(
         [lotNumber]
       );
     }
-    return;
+    return {
+      inserted: 0,
+      updated: 0,
+    };
   }
 
   const placeholders: string[] = [];
   const params: Array<number | string | null | Date> = [];
   const keys: string[] = [];
+  const hashes: string[] = [];
 
   for (const image of images) {
     const urlHash = hashUrl(image.url);
@@ -799,6 +911,63 @@ export async function replaceLotImages(
       image.lastCheckedAt
     );
     keys.push(`${image.sequence}:${urlHash}`);
+    hashes.push(urlHash);
+  }
+
+  const uniqueHashes = Array.from(new Set(hashes));
+  const hashPlaceholders = uniqueHashes.map(() => "?").join(", ");
+  const [existingRows] = await pool.query<StoredLotImageRow[]>(
+    `
+      SELECT
+        sequence,
+        variant,
+        url,
+        url_hash,
+        http_status,
+        content_type,
+        content_length,
+        width,
+        height,
+        is_full_size,
+        check_status,
+        last_checked_at
+      FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
+      WHERE lot_number = ?
+        AND url_hash IN (${hashPlaceholders})
+    `,
+    [lotNumber, ...uniqueHashes]
+  );
+
+  const existingByKey = new Map<string, StoredLotImageRow>();
+  for (const row of existingRows) {
+    existingByKey.set(`${Number(row.sequence)}:${String(row.url_hash)}`, row);
+  }
+
+  let inserted = 0;
+  let updated = 0;
+  for (const image of images) {
+    const urlHash = hashUrl(image.url);
+    const existing = existingByKey.get(`${image.sequence}:${urlHash}`);
+    if (!existing) {
+      inserted += 1;
+      continue;
+    }
+
+    const changed =
+      existing.variant !== image.variant ||
+      String(existing.url).trim() !== image.url.trim() ||
+      (existing.http_status === null ? null : Number(existing.http_status)) !== image.httpStatus ||
+      (existing.content_type ?? null) !== image.contentType ||
+      (existing.content_length === null ? null : Number(existing.content_length)) !== image.contentLength ||
+      (existing.width === null ? null : Number(existing.width)) !== image.width ||
+      (existing.height === null ? null : Number(existing.height)) !== image.height ||
+      Number(existing.is_full_size) !== (image.isFullSize ? 1 : 0) ||
+      existing.check_status !== image.checkStatus ||
+      !datesEqual(existing.last_checked_at, image.lastCheckedAt);
+
+    if (changed) {
+      updated += 1;
+    }
   }
 
   await pool.query(
@@ -845,6 +1014,11 @@ export async function replaceLotImages(
       [lotNumber, ...keys]
     );
   }
+
+  return {
+    inserted,
+    updated,
+  };
 }
 
 export async function markLotPhotoOk(lotNumber: number): Promise<void> {
@@ -956,7 +1130,7 @@ export function selectImagesForStorage(images: CheckedLotImage[]): CheckedLotIma
     const isGood =
       image.checkStatus === "ok" &&
       image.isFullSize &&
-      image.variant === "hd";
+      (image.variant === "hd" || image.variant === "full");
     if (!isGood) {
       continue;
     }

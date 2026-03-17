@@ -1,5 +1,19 @@
-ALTER TABLE `{{MEDIA_DB}}`.`lot_images`
-  ADD COLUMN IF NOT EXISTS `url_hash` CHAR(64) NULL AFTER `url`;
+SET @add_url_hash_column_sql = (
+  SELECT IF(
+    EXISTS(
+      SELECT 1
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = '{{MEDIA_DB}}'
+        AND TABLE_NAME = 'lot_images'
+        AND COLUMN_NAME = 'url_hash'
+    ),
+    'SELECT 1',
+    'ALTER TABLE `{{MEDIA_DB}}`.`lot_images` ADD COLUMN `url_hash` CHAR(64) NULL AFTER `url`'
+  )
+);
+PREPARE stmt_add_url_hash_column FROM @add_url_hash_column_sql;
+EXECUTE stmt_add_url_hash_column;
+DEALLOCATE PREPARE stmt_add_url_hash_column;
 
 UPDATE `{{MEDIA_DB}}`.`lot_images`
 SET `url_hash` = SHA2(`url`, 256)

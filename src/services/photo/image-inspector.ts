@@ -49,17 +49,23 @@ function toStatusFromHttp(httpStatus: number | null): ImageCheckStatus {
 }
 
 function computeFullSize(
+  variant: ParsedLotImageLink["variant"],
   width: number | null,
   height: number | null,
   contentLength: number | null
 ): boolean {
+  const minWidth = variant === "full" ? env.photo.fallbackFullMinWidth : env.photo.minWidth;
+  const minHeight = variant === "full" ? env.photo.fallbackFullMinHeight : env.photo.minHeight;
+  const minContentLength =
+    variant === "full" ? env.photo.fallbackFullMinContentLength : env.photo.minContentLength;
+
   if (width === null || height === null) {
     return false;
   }
-  if (width < env.photo.minWidth || height < env.photo.minHeight) {
+  if (width < minWidth || height < minHeight) {
     return false;
   }
-  if (contentLength !== null && contentLength < env.photo.minContentLength) {
+  if (contentLength !== null && contentLength < minContentLength) {
     return false;
   }
   return true;
@@ -256,7 +262,7 @@ export async function inspectLotImage(
     };
   }
 
-  const isFullSize = computeFullSize(width, height, contentLength);
+  const isFullSize = computeFullSize(image.variant, width, height, contentLength);
   const checkStatus: ImageCheckStatus =
     image.variant === "thumb" ? "ok" : isFullSize ? "ok" : "bad_quality";
 
