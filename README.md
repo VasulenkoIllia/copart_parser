@@ -299,7 +299,7 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
   - якщо лот новий — створити запис;
   - якщо існує — оновити змінені поля + `csv_payload`;
   - якщо не змінювався (`row_hash` і `csv_payload` однакові) — пропустити важкі операції.
-- Всі поля CSV також пишуться окремими колонками у `copart_core.lots` (формат імені: `csv_<оригінальна_назва_поля_з_CSV>`).
+- Відомі поля CSV пишуться окремими колонками у `copart_core.lots` з нормалізованими snake_case іменами; поля, що вже покриті core-колонками (`lot_number`, `yard_number`), окремо не дублюються. Невідомі заголовки для безпеки падають у `csv_<snake_case>`, щоб не конфліктувати з службовими колонками.
 - Після завершення ingest:
   - видалити з `copart_core.lots` лоти, яких не було в поточному CSV (`NOT EXISTS` у `ingest_lot_stage`);
 - Для нових лотів ingest може виставити `photo_status=ok`, якщо в `copart_media.lot_images` уже є валідні `hd + full-size` фото.

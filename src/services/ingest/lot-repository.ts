@@ -1,6 +1,7 @@
 import { ResultSetHeader, RowDataPacket } from "mysql2";
 import env from "../../config/env";
 import { getPool } from "../../db/mysql";
+import { resolveCsvFieldColumn } from "./csv-column-mapping";
 import { isRowChangeExcludedField } from "./row-change-exclusions";
 import { CsvFieldUpdateStat, CsvRecord, IngestCandidate, IngestCounters, UpsertBatchResult } from "./types";
 
@@ -197,19 +198,6 @@ function escapeIdentifier(identifier: string): string {
   return `\`${identifier.replace(/`/g, "``")}\``;
 }
 
-function csvFieldToColumnName(field: string): string {
-  const base = field
-    .replace(/\u0000/g, "")
-    .replace(/\r?\n/g, " ")
-    .trim();
-  const normalizedBase = base || "field";
-  const column = `csv_${normalizedBase}`;
-  if (column.length > 64) {
-    throw new Error(`CSV header is too long for MySQL column name: "${field}"`);
-  }
-  return column;
-}
-
 function escapeJsonPathField(field: string): string {
   return field
     .replace(/\\/g, "\\\\")
@@ -249,10 +237,16 @@ async function ensureCsvColumnsForBatch(batch: IngestCandidate[]): Promise<Ensur
     return { mappings: [] };
   }
 
-  const mappings = Array.from(fields).map(field => ({
-    field,
-    column: csvFieldToColumnName(field),
-  }));
+  const mappings = Array.from(fields)
+    .map(field => ({
+      field,
+      ...resolveCsvFieldColumn(field),
+    }))
+    .filter(mapping => !mapping.usesCoreColumn && !mapping.skipColumn)
+    .map(({ field, column }) => ({
+      field,
+      column,
+    }));
 
   const columnToField = new Map<string, string>();
   for (const mapping of mappings) {
