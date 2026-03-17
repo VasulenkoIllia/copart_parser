@@ -39,6 +39,7 @@ export interface CsvIngestRunSummary {
   rowsUnchanged: number;
   hydratedLotsFromMedia: number;
   prunedLots: number;
+  prunedOrphanLotImages: number;
   durationMs: number;
   maxRows: number | null;
   maxRowsReached: boolean;

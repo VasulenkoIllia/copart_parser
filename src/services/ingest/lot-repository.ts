@@ -523,6 +523,41 @@ export async function pruneMissingLots(): Promise<number> {
   return result.affectedRows;
 }
 
+export async function pruneOrphanLotImages(batchSize: number = env.maintenance.batchSize): Promise<number> {
+  const pool = getPool();
+  const safeBatchSize = Math.max(1, batchSize);
+  let total = 0;
+
+  while (true) {
+    const [result] = await pool.query<ResultSetHeader>(
+      `
+        DELETE FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
+        WHERE id IN (
+          SELECT id
+          FROM (
+            SELECT li.id
+            FROM \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+            LEFT JOIN \`${env.mysql.databaseCore}\`.\`lots\` l
+              ON l.lot_number = li.lot_number
+            WHERE l.lot_number IS NULL
+            ORDER BY li.id
+            LIMIT ?
+          ) orphan_ids
+        )
+      `,
+      [safeBatchSize]
+    );
+
+    const deleted = Number(result.affectedRows ?? 0);
+    total += deleted;
+    if (deleted < safeBatchSize) {
+      break;
+    }
+  }
+
+  return total;
+}
+
 export async function hydrateInsertedLotsPhotoStatusFromMedia(): Promise<number> {
   const pool = getPool();
 

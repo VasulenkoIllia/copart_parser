@@ -83,6 +83,7 @@ function buildPipelineSuccessMessage(
     `Оновлено зі зміною image_url: ${formatCount(ingest.rowsUpdatedImageUrlChanged)}`,
     `Некоректних рядків: ${formatCount(ingest.rowsInvalid)}`,
     `Видалено зі snapshot: ${formatCount(ingest.prunedLots)}`,
+    `Видалено orphan-фото: ${formatCount(ingest.prunedOrphanLotImages)}`,
   ];
 
   if (ingest.updatedFields.length === 0) {

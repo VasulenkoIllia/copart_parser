@@ -7,6 +7,7 @@ import {
   createIngestRun,
   hydrateInsertedLotsPhotoStatusFromMedia,
   pruneMissingLots,
+  pruneOrphanLotImages,
   upsertLotsBatch,
 } from "./lot-repository";
 import { mapCsvRow } from "./row-mapper";
@@ -173,6 +174,7 @@ async function executeCsvIngest(
   const maxRows = env.ingest.maxRows;
   let maxRowsReached = false;
   let prunedLots = 0;
+  let prunedOrphanLotImages = 0;
   let hydratedLots = 0;
   let invalidRowsReport: GeneratedReportFile | null = null;
   let invalidRowsDebugReport: GeneratedReportFile | null = null;
@@ -283,6 +285,7 @@ async function executeCsvIngest(
       }
 
       prunedLots = await pruneMissingLots();
+      prunedOrphanLotImages = await pruneOrphanLotImages();
     } else if (env.ingest.pruneMissingLots && skipPruneForLimitedRun) {
       logger.warn("CSV ingest prune skipped because run used INGEST_MAX_ROWS limit", {
         maxRows,
@@ -316,6 +319,7 @@ async function executeCsvIngest(
       updatedFields: updatedFields.length,
       hydratedLotsFromMedia: hydratedLots,
       prunedLots,
+      prunedOrphanLotImages,
       durationMs,
       rowsPerSec,
       maxRows: maxRows > 0 ? maxRows : null,
@@ -336,6 +340,7 @@ async function executeCsvIngest(
       updatedFields,
       hydratedLotsFromMedia: hydratedLots,
       prunedLots,
+      prunedOrphanLotImages,
       durationMs,
       maxRows: maxRows > 0 ? maxRows : null,
       maxRowsReached,
@@ -358,6 +363,7 @@ async function executeCsvIngest(
           `updated_fields_total=${updatedFields.length}`,
           `hydrated_lots_from_media=${hydratedLots}`,
           `pruned_lots=${prunedLots}`,
+          `pruned_orphan_lot_images=${prunedOrphanLotImages}`,
           ...buildUpdatedFieldsTelegramLines(updatedFields),
         ].join("\n")
       );
