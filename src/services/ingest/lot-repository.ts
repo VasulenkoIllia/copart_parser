@@ -1,6 +1,7 @@
 import { ResultSetHeader, RowDataPacket } from "mysql2";
 import env from "../../config/env";
 import { getPool } from "../../db/mysql";
+import { isRowChangeExcludedField } from "./row-change-exclusions";
 import { CsvFieldUpdateStat, CsvRecord, IngestCandidate, IngestCounters, UpsertBatchResult } from "./types";
 
 interface ExistingLotHashRow extends RowDataPacket {
@@ -171,6 +172,9 @@ function getChangedFields(previous: CsvRecord, current: CsvRecord): string[] {
   const keys = new Set<string>([...Object.keys(previous), ...Object.keys(current)]);
   const changedFields: string[] = [];
   for (const key of keys) {
+    if (isRowChangeExcludedField(key)) {
+      continue;
+    }
     const previousHasKey = Object.prototype.hasOwnProperty.call(previous, key);
     const currentHasKey = Object.prototype.hasOwnProperty.call(current, key);
     const previousValue = previousHasKey ? previous[key] : "";

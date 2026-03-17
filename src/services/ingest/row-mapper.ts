@@ -1,13 +1,8 @@
 import env from "../../config/env";
 import { hashObject } from "../../lib/hash";
 import { normalizeCopartLotImagesUrl } from "../../lib/url-utils";
+import { isRowChangeExcludedField } from "./row-change-exclusions";
 import { CsvRecord, IngestCandidate } from "./types";
-
-const HASH_EXCLUDED_FIELDS = new Set([
-  "last updated time",
-  "last_updated_time",
-  "lastupdatedtime",
-]);
 
 function pickFirst(record: CsvRecord, keys: string[]): string {
   for (const key of keys) {
@@ -38,8 +33,7 @@ function normalizeRecord(record: Record<string, unknown>): CsvRecord {
 function buildHashPayload(record: CsvRecord): CsvRecord {
   const payload: CsvRecord = {};
   for (const [key, value] of Object.entries(record)) {
-    const normalizedKey = key.trim().toLowerCase();
-    if (HASH_EXCLUDED_FIELDS.has(normalizedKey)) {
+    if (isRowChangeExcludedField(key)) {
       continue;
     }
     payload[key] = value;
