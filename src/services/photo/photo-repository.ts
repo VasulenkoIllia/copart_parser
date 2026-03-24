@@ -22,6 +22,15 @@ interface LotCandidateRow extends RowDataPacket {
   photo_404_count: number;
 }
 
+interface LotWithoutAnyPhotosRow extends RowDataPacket {
+  lot_number: number;
+  image_url: string;
+  photo_status: "unknown" | "ok" | "missing";
+  photo_404_count: number;
+  next_photo_retry_at: Date | string | null;
+  last_seen_at: Date | string | null;
+}
+
 interface CachedImageRow extends RowDataPacket {
   sequence: number;
   variant: ImageVariant;
@@ -743,6 +752,67 @@ export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandi
     imageUrl: String(row.image_url),
     photoStatus: row.photo_status,
     photo404Count: Number(row.photo_404_count || 0),
+  }));
+}
+
+export interface LotWithoutAnyPhotos {
+  lotNumber: number;
+  imageUrl: string;
+  photoStatus: "unknown" | "ok" | "missing";
+  photo404Count: number;
+  nextPhotoRetryAt: Date | null;
+  lastSeenAt: Date | null;
+}
+
+export async function countLotsWithoutAnyPhotos(): Promise<number> {
+  const pool = getPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `
+      SELECT COUNT(*) AS total
+      FROM \`${env.mysql.databaseCore}\`.\`lots\` l
+      LEFT JOIN \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+        ON li.lot_number = l.lot_number
+      WHERE l.image_url IS NOT NULL
+        AND li.lot_number IS NULL
+    `
+  );
+
+  return Number(rows[0]?.total ?? 0);
+}
+
+export async function fetchLotsWithoutAnyPhotos(
+  limit?: number | null
+): Promise<LotWithoutAnyPhotos[]> {
+  const pool = getPool();
+  const safeLimit =
+    typeof limit === "number" && Number.isFinite(limit) ? Math.max(1, Math.trunc(limit)) : null;
+  const [rows] = await pool.query<LotWithoutAnyPhotosRow[]>(
+    `
+      SELECT
+        l.lot_number,
+        l.image_url,
+        l.photo_status,
+        l.photo_404_count,
+        l.next_photo_retry_at,
+        l.last_seen_at
+      FROM \`${env.mysql.databaseCore}\`.\`lots\` l
+      LEFT JOIN \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+        ON li.lot_number = l.lot_number
+      WHERE l.image_url IS NOT NULL
+        AND li.lot_number IS NULL
+      ORDER BY l.last_seen_at DESC
+      ${safeLimit !== null ? "LIMIT ?" : ""}
+    `,
+    safeLimit !== null ? [safeLimit] : []
+  );
+
+  return rows.map(row => ({
+    lotNumber: Number(row.lot_number),
+    imageUrl: String(row.image_url),
+    photoStatus: row.photo_status,
+    photo404Count: Number(row.photo_404_count || 0),
+    nextPhotoRetryAt: toDate(row.next_photo_retry_at),
+    lastSeenAt: toDate(row.last_seen_at),
   }));
 }
 

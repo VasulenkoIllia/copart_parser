@@ -1,5 +1,6 @@
 import { logger } from "../../lib/logger";
 import {
+  fetchLotsWithoutAnyPhotos,
   fetchPhoto404AttemptsForClusterRun,
   fetchPhoto404AttemptsForRun,
 } from "../photo/photo-repository";
@@ -167,6 +168,18 @@ export async function createPhoto404ReportForClusterRun(
   });
 }
 
+export async function createLotsWithoutAnyPhotosReport(): Promise<GeneratedReportFile | null> {
+  const lots = await fetchLotsWithoutAnyPhotos();
+  return writeCsvReport({
+    prefix: "copart_lots_without_any_photos",
+    headers: ["lot_number", "image_url"],
+    rows: lots.map(lot => ({
+      lot_number: lot.lotNumber,
+      image_url: lot.imageUrl,
+    })),
+  });
+}
+
 export async function tryCreateInvalidRowsReport(
   entries: InvalidCsvRowReportEntry[]
 ): Promise<GeneratedReportFile | null> {
@@ -218,6 +231,17 @@ export async function tryCreatePhoto404ReportForClusterRun(
     logger.warn("Failed to create HTTP 404 CSV report for photo cluster run", {
       message: error instanceof Error ? error.message : String(error),
       clusterRunId,
+    });
+    return null;
+  }
+}
+
+export async function tryCreateLotsWithoutAnyPhotosReport(): Promise<GeneratedReportFile | null> {
+  try {
+    return await createLotsWithoutAnyPhotosReport();
+  } catch (error) {
+    logger.warn("Failed to create lots-without-any-photos CSV report", {
+      message: error instanceof Error ? error.message : String(error),
     });
     return null;
   }

@@ -3,9 +3,14 @@ import env from "../../config/env";
 import { logger } from "../../lib/logger";
 import { runPhotoCluster } from "../photo/photo-cluster";
 import { runPhotoSync } from "../photo/photo-sync";
+import { countLotsWithoutAnyPhotos } from "../photo/photo-repository";
+import { PhotoClusterRunResult, PhotoSyncRunSummary } from "../photo/types";
 import { runFullPipelineOnce } from "../pipeline/run-once";
 import { runRetentionCleanup } from "../maintenance/retention";
-import { sendTelegramError, sendTelegramMessage } from "../notify/telegram";
+import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
+import { cleanupReportFiles } from "../reports/csv-report";
+import { tryCreateLotsWithoutAnyPhotosReport } from "../reports/run-artifacts";
+import { GeneratedReportFile } from "../reports/types";
 import { startTelegramBotPolling } from "../telegram/bot";
 
 function pad2(value: number): string {
@@ -71,6 +76,43 @@ function describeCron(cronExpr: string): string {
   return trimmed;
 }
 
+function formatCount(value: number): string {
+  return new Intl.NumberFormat("uk-UA").format(value);
+}
+
+function buildPhotoRetrySuccessMessage(
+  summary: PhotoSyncRunSummary | PhotoClusterRunResult,
+  lotsWithoutAnyPhotosTotal: number,
+  lotsWithoutAnyPhotosCsv: string
+): string {
+  const lotsProcessed = summary.mode === "cluster" ? summary.totalLotsProcessed : summary.lotsProcessed;
+  const photoLinksProcessed =
+    summary.mode === "cluster" ? summary.totalPhotoLinksProcessed : summary.photoLinksProcessed;
+  const lotsOk = summary.mode === "cluster" ? summary.totalLotsOk : summary.lotsOk;
+  const lotsMissing = summary.mode === "cluster" ? summary.totalLotsMissing : summary.lotsMissing;
+  const imagesInserted = summary.mode === "cluster" ? summary.totalImagesInserted : summary.imagesInserted;
+  const imagesUpdated = summary.mode === "cluster" ? summary.totalImagesUpdated : summary.imagesUpdated;
+  const imagesStoredHd = summary.mode === "cluster" ? summary.totalImagesStoredHd : summary.imagesStoredHd;
+  const imagesStoredFull = summary.mode === "cluster" ? summary.totalImagesStoredFull : summary.imagesStoredFull;
+  const endpoint404Lots = summary.mode === "cluster" ? summary.totalEndpoint404Lots : summary.endpoint404Lots;
+
+  return [
+    "[PHOTO RETRY] success",
+    `mode=${summary.mode}`,
+    `lots_processed=${formatCount(lotsProcessed)}`,
+    `photo_links_processed=${formatCount(photoLinksProcessed)}`,
+    `lots_ok=${formatCount(lotsOk)}`,
+    `lots_missing=${formatCount(lotsMissing)}`,
+    `images_inserted=${formatCount(imagesInserted)}`,
+    `images_updated=${formatCount(imagesUpdated)}`,
+    `images_stored_hd=${formatCount(imagesStoredHd)}`,
+    `images_stored_full=${formatCount(imagesStoredFull)}`,
+    `endpoint_404_lots=${formatCount(endpoint404Lots)}`,
+    `lots_without_any_photos_total=${formatCount(lotsWithoutAnyPhotosTotal)}`,
+    `lots_without_any_photos_csv=${lotsWithoutAnyPhotosCsv}`,
+  ].join("\n");
+}
+
 async function safeRun(
   name: string,
   action: () => Promise<unknown>,
@@ -129,10 +171,41 @@ export async function startScheduler(): Promise<void> {
       () => {
         void safeRun(
           "PHOTO_SYNC",
-          () =>
-            env.photo.workerTotal > 1
-              ? runPhotoCluster()
-              : runPhotoSync({ notifyError: false }),
+          async () => {
+            const summary =
+              env.photo.workerTotal > 1
+                ? await runPhotoCluster()
+                : (await runPhotoSync({ notifySuccess: false, notifyError: false })).summary ?? null;
+            if (!summary || !env.telegram.sendSuccessSummary) {
+              return;
+            }
+
+            let lotsWithoutAnyPhotosReport: GeneratedReportFile | null = null;
+            try {
+              const lotsWithoutAnyPhotosTotal = await countLotsWithoutAnyPhotos();
+              lotsWithoutAnyPhotosReport = await tryCreateLotsWithoutAnyPhotosReport();
+              await sendTelegramMessage(
+                buildPhotoRetrySuccessMessage(
+                  summary,
+                  lotsWithoutAnyPhotosTotal,
+                  lotsWithoutAnyPhotosReport?.filename ?? "none"
+                )
+              );
+              await sendTelegramDocuments(
+                lotsWithoutAnyPhotosReport
+                  ? [
+                      {
+                        path: lotsWithoutAnyPhotosReport.path,
+                        filename: lotsWithoutAnyPhotosReport.filename,
+                        caption: `Лоти без фото (${formatCount(lotsWithoutAnyPhotosTotal)})`,
+                      },
+                    ]
+                  : []
+              );
+            } finally {
+              await cleanupReportFiles([lotsWithoutAnyPhotosReport]);
+            }
+          },
           { notifyError: env.photo.workerTotal > 1 }
         );
       },
