@@ -72,6 +72,18 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
 }
 
+function stripUrlQueryAndHash(url: string): string {
+  const hashIndex = url.indexOf("#");
+  const withoutHash = hashIndex === -1 ? url : url.slice(0, hashIndex);
+  const queryIndex = withoutHash.indexOf("?");
+  return queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+}
+
+function isFullSuffixImageUrl(url: string): boolean {
+  const normalized = stripUrlQueryAndHash(url.trim().toLowerCase());
+  return /_ful\.(jpg|jpeg|png)$/.test(normalized);
+}
+
 function parseEndpointPayload(
   lotNumber: number,
   payload: unknown
@@ -89,6 +101,7 @@ function parseEndpointPayload(
 
   const hdMap = new Map<string, ParsedLotImageLink>();
   const fullMap = new Map<string, ParsedLotImageLink>();
+  let hasHdFlag = false;
 
   for (const lotImage of data.lotImages) {
     const sequence = Number.isFinite(Number(lotImage.sequence)) ? Number(lotImage.sequence) : 0;
@@ -102,6 +115,10 @@ function parseEndpointPayload(
       const cleanUrl = String(link.url).trim();
       if (!cleanUrl) {
         continue;
+      }
+
+      if (link.isHdImage === true) {
+        hasHdFlag = true;
       }
 
       const variant = deriveVariant(
@@ -128,9 +145,18 @@ function parseEndpointPayload(
     }
   }
 
+  const hdLinks = Array.from(hdMap.values());
+  const allFullLinks = Array.from(fullMap.values());
+  const fullSuffixLinks = allFullLinks.filter(link => isFullSuffixImageUrl(link.url));
+  const nonFullSuffixLinks = allFullLinks.filter(link => !isFullSuffixImageUrl(link.url));
+  const preferredFullLinks =
+    !hasHdFlag && fullSuffixLinks.length > 0
+      ? [...fullSuffixLinks, ...nonFullSuffixLinks]
+      : allFullLinks;
+
   return {
-    hdLinks: Array.from(hdMap.values()),
-    fullLinks: Array.from(fullMap.values()),
+    hdLinks,
+    fullLinks: preferredFullLinks,
     imgCount,
   };
 }

@@ -1235,17 +1235,22 @@ export function deriveVariant(
   isHdImage: boolean | undefined,
   isEngineSound: boolean | undefined
 ): ImageVariant {
-  const normalized = url.toLowerCase();
-  if (normalized.endsWith(".mp4") || isEngineSound) {
+  const normalized = url.trim().toLowerCase();
+  const hashIndex = normalized.indexOf("#");
+  const withoutHash = hashIndex === -1 ? normalized : normalized.slice(0, hashIndex);
+  const queryIndex = withoutHash.indexOf("?");
+  const fileUrl = queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+
+  if (fileUrl.endsWith(".mp4") || isEngineSound) {
     return "video";
   }
-  if (isThumbNail) {
+  if (isThumbNail || fileUrl.includes("_thb.")) {
     return "thumb";
   }
-  if (isHdImage || normalized.includes("_hrs.")) {
+  if (isHdImage || fileUrl.includes("_hrs.")) {
     return "hd";
   }
-  if (normalized.endsWith(".jpg") || normalized.endsWith(".jpeg") || normalized.endsWith(".png")) {
+  if (fileUrl.endsWith(".jpg") || fileUrl.endsWith(".jpeg") || fileUrl.endsWith(".png")) {
     return "full";
   }
   return "unknown";
