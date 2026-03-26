@@ -49,26 +49,15 @@ function toStatusFromHttp(httpStatus: number | null): ImageCheckStatus {
 }
 
 function computeFullSize(
-  variant: ParsedLotImageLink["variant"],
+  _variant: ParsedLotImageLink["variant"],
   width: number | null,
-  height: number | null,
-  contentLength: number | null
+  _height: number | null,
+  _contentLength: number | null
 ): boolean {
-  const minWidth = variant === "full" ? env.photo.fallbackFullMinWidth : env.photo.minWidth;
-  const minHeight = variant === "full" ? env.photo.fallbackFullMinHeight : env.photo.minHeight;
-  const minContentLength =
-    variant === "full" ? env.photo.fallbackFullMinContentLength : env.photo.minContentLength;
-
-  if (width === null || height === null) {
+  if (width === null) {
     return false;
   }
-  if (width < minWidth || height < minHeight) {
-    return false;
-  }
-  if (contentLength !== null && contentLength < minContentLength) {
-    return false;
-  }
-  return true;
+  return width >= env.photo.minWidth;
 }
 
 export async function inspectLotImage(

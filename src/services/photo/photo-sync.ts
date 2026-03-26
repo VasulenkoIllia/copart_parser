@@ -12,7 +12,6 @@ import {
   completePhotoRunFailure,
   completePhotoRunSuccess,
   createPhotoRun,
-  deriveVariant,
   fetchCachedGoodImages,
   fetchPhotoCandidateByLotNumber,
   fetchPhotoCandidates,
@@ -81,27 +80,52 @@ function stripUrlQueryAndHash(url: string): string {
 
 function isFullSuffixImageUrl(url: string): boolean {
   const normalized = stripUrlQueryAndHash(url.trim().toLowerCase());
-  return /_ful\.(jpg|jpeg|png)$/.test(normalized);
+  return /_ful\.(jpg|jpeg|png|webp)$/.test(normalized);
+}
+
+function isHdSuffixImageUrl(url: string): boolean {
+  const normalized = stripUrlQueryAndHash(url.trim().toLowerCase());
+  return /_hrs\.(jpg|jpeg|png|webp)$/.test(normalized);
+}
+
+function isThumbSuffixImageUrl(url: string): boolean {
+  const normalized = stripUrlQueryAndHash(url.trim().toLowerCase());
+  return normalized.includes("_thb.");
+}
+
+function hasAcceptedImageExtension(url: string): boolean {
+  const normalized = stripUrlQueryAndHash(url.trim().toLowerCase());
+  const dotIndex = normalized.lastIndexOf(".");
+  if (dotIndex === -1 || dotIndex === normalized.length - 1) {
+    return false;
+  }
+  const extension = normalized.slice(dotIndex + 1);
+  return env.photo.acceptedExtensions.some(item => item.toLowerCase() === extension);
 }
 
 function parseEndpointPayload(
   lotNumber: number,
   payload: unknown
-): { hdLinks: ParsedLotImageLink[]; fullLinks: ParsedLotImageLink[]; imgCount: number } {
+): {
+  fullLinks: ParsedLotImageLink[];
+  hdLinks: ParsedLotImageLink[];
+  otherLinks: ParsedLotImageLink[];
+  imgCount: number;
+} {
   if (!isObject(payload)) {
-    return { hdLinks: [], fullLinks: [], imgCount: 0 };
+    return { fullLinks: [], hdLinks: [], otherLinks: [], imgCount: 0 };
   }
 
   const data = payload as LotImagesEndpointPayload;
   const imgCount = typeof data.imgCount === "number" ? data.imgCount : 0;
 
   if (!Array.isArray(data.lotImages)) {
-    return { hdLinks: [], fullLinks: [], imgCount };
+    return { fullLinks: [], hdLinks: [], otherLinks: [], imgCount };
   }
 
-  const hdMap = new Map<string, ParsedLotImageLink>();
   const fullMap = new Map<string, ParsedLotImageLink>();
-  let hasHdFlag = false;
+  const hdMap = new Map<string, ParsedLotImageLink>();
+  const otherMap = new Map<string, ParsedLotImageLink>();
 
   for (const lotImage of data.lotImages) {
     const sequence = Number.isFinite(Number(lotImage.sequence)) ? Number(lotImage.sequence) : 0;
@@ -117,23 +141,33 @@ function parseEndpointPayload(
         continue;
       }
 
-      if (link.isHdImage === true) {
-        hasHdFlag = true;
+      const normalized = stripUrlQueryAndHash(cleanUrl.toLowerCase());
+      if (Boolean(link.isEngineSound) || normalized.endsWith(".mp4")) {
+        continue;
       }
-
-      const variant = deriveVariant(
-        cleanUrl,
-        Boolean(link.isThumbNail),
-        Boolean(link.isHdImage),
-        Boolean(link.isEngineSound)
-      );
-
-      if (variant !== "hd" && variant !== "full") {
+      if (Boolean(link.isThumbNail) || isThumbSuffixImageUrl(cleanUrl)) {
         continue;
       }
 
       const key = `${sequence}:${cleanUrl}`;
-      const targetMap = variant === "hd" ? hdMap : fullMap;
+
+      let targetMap: Map<string, ParsedLotImageLink> | null = null;
+      let variant: ParsedLotImageLink["variant"] | null = null;
+      if (isFullSuffixImageUrl(cleanUrl)) {
+        targetMap = fullMap;
+        variant = "full";
+      } else if (Boolean(link.isHdImage) || isHdSuffixImageUrl(cleanUrl)) {
+        targetMap = hdMap;
+        variant = "hd";
+      } else if (hasAcceptedImageExtension(cleanUrl)) {
+        targetMap = otherMap;
+        variant = "unknown";
+      }
+
+      if (!targetMap || !variant) {
+        continue;
+      }
+
       if (!targetMap.has(key)) {
         targetMap.set(key, {
           lotNumber,
@@ -145,18 +179,14 @@ function parseEndpointPayload(
     }
   }
 
-  const hdLinks = Array.from(hdMap.values());
   const allFullLinks = Array.from(fullMap.values());
-  const fullSuffixLinks = allFullLinks.filter(link => isFullSuffixImageUrl(link.url));
-  const nonFullSuffixLinks = allFullLinks.filter(link => !isFullSuffixImageUrl(link.url));
-  const preferredFullLinks =
-    !hasHdFlag && fullSuffixLinks.length > 0
-      ? [...fullSuffixLinks, ...nonFullSuffixLinks]
-      : allFullLinks;
+  const hdLinks = Array.from(hdMap.values());
+  const otherLinks = Array.from(otherMap.values());
 
   return {
+    fullLinks: allFullLinks,
     hdLinks,
-    fullLinks: preferredFullLinks,
+    otherLinks,
     imgCount,
   };
 }
@@ -324,7 +354,7 @@ async function processLot(
     }
 
     const parsed = parseEndpointPayload(candidate.lotNumber, response.data);
-    const supportedLinksCount = parsed.hdLinks.length + parsed.fullLinks.length;
+    const supportedLinksCount = parsed.fullLinks.length + parsed.hdLinks.length + parsed.otherLinks.length;
     if (supportedLinksCount === 0 || parsed.imgCount === 0) {
       if (storageMode === "replace") {
         await clearLotImages(candidate.lotNumber);
@@ -339,6 +369,7 @@ async function processLot(
         imgCount: parsed.imgCount,
         parsedHdLinks: parsed.hdLinks.length,
         parsedFullLinks: parsed.fullLinks.length,
+        parsedOtherLinks: parsed.otherLinks.length,
         backoffMinutes: backoff,
       });
       counters.lotsProcessed += 1;
@@ -346,22 +377,43 @@ async function processLot(
       return;
     }
 
-    const checkedHdLinks = await inspectParsedLinks(parsed.hdLinks);
-    counters.photoLinksProcessed += checkedHdLinks.length;
+    let checkedLinks: CheckedLotImage[] = [];
+    let storageImages: CheckedLotImage[] = [];
+    let selectedTier: "full" | "hd" | "other" | "none" = "none";
 
-    let checkedLinks = checkedHdLinks;
-    let storageImages = selectImagesForStorage(checkedHdLinks).filter(image => image.variant === "hd");
-    let usedFallbackFull = false;
+    const tryTier = async (
+      tier: "full" | "hd" | "other",
+      links: ParsedLotImageLink[],
+      acceptedVariants: Array<CheckedLotImage["variant"]>
+    ): Promise<boolean> => {
+      if (links.length === 0) {
+        return false;
+      }
+      const checked = await inspectParsedLinks(links);
+      counters.photoLinksProcessed += checked.length;
+      checkedLinks = [...checkedLinks, ...checked];
+      const selected = selectImagesForStorage(checked).filter(image =>
+        acceptedVariants.includes(image.variant)
+      );
+      if (selected.length === 0) {
+        return false;
+      }
+      storageImages = selected;
+      selectedTier = tier;
+      return true;
+    };
 
-    if (storageImages.length === 0 && parsed.fullLinks.length > 0) {
-      const checkedFullLinks = await inspectParsedLinks(parsed.fullLinks);
-      counters.photoLinksProcessed += checkedFullLinks.length;
-      checkedLinks = [...checkedHdLinks, ...checkedFullLinks];
-      storageImages = selectImagesForStorage(checkedFullLinks).filter(image => image.variant === "full");
-      usedFallbackFull = storageImages.length > 0;
+    if (!(await tryTier("full", parsed.fullLinks, ["full"]))) {
+      if (!(await tryTier("hd", parsed.hdLinks, ["hd"]))) {
+        await tryTier("other", parsed.otherLinks, ["unknown", "full"]);
+      }
     }
 
-    const replaceSummary = await replaceLotImages(candidate.lotNumber, storageImages, storageMode);
+    const replaceSummary = await replaceLotImages(
+      candidate.lotNumber,
+      storageImages,
+      storageImages.length > 0 ? "replace" : storageMode
+    );
 
     const imageStats = summarizeImageChecks(checkedLinks);
 
@@ -370,60 +422,43 @@ async function processLot(
     counters.imagesUpdated += replaceSummary.updated;
     counters.imagesFullSize += storageImages.length;
     counters.imagesStoredHd += storageImages.filter(image => image.variant === "hd").length;
-    counters.imagesStoredFull += storageImages.filter(image => image.variant === "full").length;
+    counters.imagesStoredFull += storageImages.filter(
+      image => image.variant === "full" || image.variant === "unknown"
+    ).length;
     counters.imagesBadQuality += imageStats.badQuality;
     counters.http404Count += imageStats.notFound;
 
     if (storageImages.length > 0) {
       const storedVariant = storageImages[0]?.variant ?? "unknown";
-      if (storedVariant === "hd") {
-        await markLotPhotoOk(candidate.lotNumber);
-        logResult({
-          lotNumber: candidate.lotNumber,
-          status: "ok",
-          endpointStatus,
-          parsedHdLinks: parsed.hdLinks.length,
-          parsedFullLinks: parsed.fullLinks.length,
-          storedGoodImages: storageImages.length,
-          storedVariant,
-          insertedImages: replaceSummary.inserted,
-          updatedImages: replaceSummary.updated,
-          badQuality: imageStats.badQuality,
-          notFound: imageStats.notFound,
-        });
-        counters.lotsOk += 1;
-      } else {
-        const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
-        // Keep the lot in retry flow so a later run can still upgrade stored full images to HD.
-        await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
-        logResult({
-          lotNumber: candidate.lotNumber,
-          status: "missing",
-          reason: "stored_full_fallback",
-          endpointStatus,
-          parsedHdLinks: parsed.hdLinks.length,
-          parsedFullLinks: parsed.fullLinks.length,
-          storedGoodImages: storageImages.length,
-          storedVariant,
-          usedFallbackFull,
-          insertedImages: replaceSummary.inserted,
-          updatedImages: replaceSummary.updated,
-          badQuality: imageStats.badQuality,
-          notFound: imageStats.notFound,
-          backoffMinutes: backoff,
-        });
-        counters.lotsMissing += 1;
-      }
+      await markLotPhotoOk(candidate.lotNumber);
+      logResult({
+        lotNumber: candidate.lotNumber,
+        status: "ok",
+        endpointStatus,
+        parsedHdLinks: parsed.hdLinks.length,
+        parsedFullLinks: parsed.fullLinks.length,
+        parsedOtherLinks: parsed.otherLinks.length,
+        selectedTier,
+        storedGoodImages: storageImages.length,
+        storedVariant,
+        insertedImages: replaceSummary.inserted,
+        updatedImages: replaceSummary.updated,
+        badQuality: imageStats.badQuality,
+        notFound: imageStats.notFound,
+      });
+      counters.lotsOk += 1;
     } else {
       const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
       await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
       logResult({
         lotNumber: candidate.lotNumber,
         status: "missing",
-        reason: "no_valid_hd_or_full_images",
+        reason: "no_valid_full_hd_or_other_images",
         endpointStatus,
         parsedHdLinks: parsed.hdLinks.length,
         parsedFullLinks: parsed.fullLinks.length,
+        parsedOtherLinks: parsed.otherLinks.length,
+        selectedTier,
         storedGoodImages: storageImages.length,
         badQuality: imageStats.badQuality,
         notFound: imageStats.notFound,

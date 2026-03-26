@@ -736,7 +736,7 @@ export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandi
               WHERE li.lot_number = l.lot_number
                 AND li.check_status = 'ok'
                 AND li.is_full_size = 1
-                AND li.variant = 'hd'
+                AND li.variant IN ('hd', 'full', 'unknown')
             )
           )
         )
@@ -928,7 +928,7 @@ export async function fetchCachedGoodImages(
       FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
       WHERE
         lot_number = ?
-        AND variant IN ('hd', 'full')
+        AND variant IN ('hd', 'full', 'unknown')
         AND check_status = 'ok'
         AND is_full_size = 1
         AND url_hash IN (${placeholders})
@@ -1250,7 +1250,12 @@ export function deriveVariant(
   if (isHdImage || fileUrl.includes("_hrs.")) {
     return "hd";
   }
-  if (fileUrl.endsWith(".jpg") || fileUrl.endsWith(".jpeg") || fileUrl.endsWith(".png")) {
+  if (
+    fileUrl.endsWith(".jpg") ||
+    fileUrl.endsWith(".jpeg") ||
+    fileUrl.endsWith(".png") ||
+    fileUrl.endsWith(".webp")
+  ) {
     return "full";
   }
   return "unknown";
@@ -1280,7 +1285,7 @@ export function selectImagesForStorage(images: CheckedLotImage[]): CheckedLotIma
     const isGood =
       image.checkStatus === "ok" &&
       image.isFullSize &&
-      (image.variant === "hd" || image.variant === "full");
+      (image.variant === "hd" || image.variant === "full" || image.variant === "unknown");
     if (!isGood) {
       continue;
     }

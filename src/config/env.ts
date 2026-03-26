@@ -314,7 +314,7 @@ const env: AppEnv = {
     imageRetries: toInt("PHOTO_IMAGE_RETRIES", 3),
     logLotResults: toBoolean("PHOTO_LOG_LOT_RESULTS", false),
     validateByHeadFirst: toBoolean("PHOTO_VALIDATE_BY_HEAD_FIRST", true),
-    minWidth: toInt("PHOTO_MIN_WIDTH", 1200),
+    minWidth: toInt("PHOTO_MIN_WIDTH", 599),
     minHeight: toInt("PHOTO_MIN_HEIGHT", 900),
     minContentLength: toInt("PHOTO_MIN_CONTENT_LENGTH", 120_000),
     fallbackFullMinWidth: toInt("PHOTO_FALLBACK_FULL_MIN_WIDTH", 900),

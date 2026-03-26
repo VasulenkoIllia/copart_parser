@@ -600,7 +600,7 @@ export async function hydrateInsertedLotsPhotoStatusFromMedia(): Promise<number>
         FROM \`${env.mysql.databaseMedia}\`.\`lot_images\`
         WHERE check_status = 'ok'
           AND is_full_size = 1
-          AND variant = 'hd'
+          AND variant IN ('hd', 'full', 'unknown')
         GROUP BY lot_number
       ) m
         ON m.lot_number = l.lot_number
@@ -611,8 +611,11 @@ export async function hydrateInsertedLotsPhotoStatusFromMedia(): Promise<number>
         l.next_photo_retry_at = NULL,
         l.last_photo_check_at = COALESCE(m.max_checked_at, CURRENT_TIMESTAMP(3))
       WHERE
-        l.photo_status = 'unknown'
-        AND l.last_photo_check_at IS NULL
+        l.photo_status <> 'ok'
+        OR l.photo_404_count <> 0
+        OR l.photo_404_since IS NOT NULL
+        OR l.next_photo_retry_at IS NOT NULL
+        OR l.last_photo_check_at IS NULL
     `
   );
 
