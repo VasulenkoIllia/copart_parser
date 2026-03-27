@@ -330,7 +330,7 @@ const env: AppEnv = {
     fallbackFullMinContentLength: toInt("PHOTO_FALLBACK_FULL_MIN_CONTENT_LENGTH", 80_000),
     acceptedExtensions: parseList("PHOTO_ACCEPTED_EXTENSIONS"),
     retryBaseDelayMinutes: toInt("PHOTO_RETRY_BASE_DELAY_MINUTES", 30),
-    retryMaxDelayMinutes: toInt("PHOTO_RETRY_MAX_DELAY_MINUTES", 1440),
+    retryMaxDelayMinutes: toInt("PHOTO_RETRY_MAX_DELAY_MINUTES", 120),
   },
   proxy: {
     mode: parseHttpMode("HTTP_MODE", "direct"),

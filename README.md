@@ -147,7 +147,9 @@ docker compose up -d mysql app
 Для окремих retry-ранiв (`PHOTO_RETRY_CRON`, `PHOTO_SOLR_RETRY_CRON`) в Telegram приходить окремий звіт з:
 
 - метриками обробки retry-лотів;
-- `lots_without_any_photos_total` + CSV `lots_without_any_photos`;
+- stage-міткою (`inventory_retry` або `solr_retry`) і стратегією endpoint (`inventoryv2_only` або `inventoryv2_then_solr_fallback`);
+- `lots_without_any_photos_total` + розбивкою `missing_due_now / missing_due_future / unknown / ok_without_media`;
+- CSV `lots_without_any_photos` (вже з колонками `photo_status`, `photo_404_count`, `next_photo_retry_at`, `last_seen_at`, `retry_state`);
 - `endpoint_issues_total` (+ `429/403/404`, `inventory/solr`) + CSV `endpoint_issues` за поточне вікно run.
 
 Помилки retry-задач (`PHOTO_SYNC`, `PHOTO_SOLR_RETRY`) також відправляються в Telegram як error alert.

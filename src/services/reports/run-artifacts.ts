@@ -239,14 +239,40 @@ export async function createPhotoEndpointIssuesReportForClusterRun(
   return createPhotoEndpointIssuesReport(attempts, `copart_endpoint_issues_cluster_${clusterRunId}`);
 }
 
-export async function createLotsWithoutAnyPhotosReport(): Promise<GeneratedReportFile | null> {
+export async function createLotsWithoutAnyPhotosReport(
+  prefix: string = "copart_lots_without_any_photos"
+): Promise<GeneratedReportFile | null> {
   const lots = await fetchLotsWithoutAnyPhotos();
+  const nowMs = Date.now();
+  const deriveRetryState = (lot: (typeof lots)[number]): string => {
+    if (lot.photoStatus !== "missing") {
+      return lot.photoStatus;
+    }
+    if (!lot.nextPhotoRetryAt) {
+      return "due_now";
+    }
+    return lot.nextPhotoRetryAt.getTime() <= nowMs ? "due_now" : "due_future";
+  };
+
   return writeCsvReport({
-    prefix: "copart_lots_without_any_photos",
-    headers: ["lot_number", "image_url"],
+    prefix,
+    headers: [
+      "lot_number",
+      "image_url",
+      "photo_status",
+      "photo_404_count",
+      "next_photo_retry_at",
+      "last_seen_at",
+      "retry_state",
+    ],
     rows: lots.map(lot => ({
       lot_number: lot.lotNumber,
       image_url: lot.imageUrl,
+      photo_status: lot.photoStatus,
+      photo_404_count: lot.photo404Count,
+      next_photo_retry_at: lot.nextPhotoRetryAt,
+      last_seen_at: lot.lastSeenAt,
+      retry_state: deriveRetryState(lot),
     })),
   });
 }
@@ -351,12 +377,15 @@ export async function tryCreatePhotoEndpointIssuesReportForClusterRun(
   }
 }
 
-export async function tryCreateLotsWithoutAnyPhotosReport(): Promise<GeneratedReportFile | null> {
+export async function tryCreateLotsWithoutAnyPhotosReport(
+  prefix?: string
+): Promise<GeneratedReportFile | null> {
   try {
-    return await createLotsWithoutAnyPhotosReport();
+    return await createLotsWithoutAnyPhotosReport(prefix);
   } catch (error) {
     logger.warn("Failed to create lots-without-any-photos CSV report", {
       message: error instanceof Error ? error.message : String(error),
+      prefix: prefix ?? "copart_lots_without_any_photos",
     });
     return null;
   }

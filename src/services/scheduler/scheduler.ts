@@ -4,9 +4,10 @@ import { logger } from "../../lib/logger";
 import { runPhotoCluster } from "../photo/photo-cluster";
 import { runPhotoSync } from "../photo/photo-sync";
 import {
-  countLotsWithoutAnyPhotos,
+  fetchLotsWithoutAnyPhotosStats,
   fetchPhotoEndpointIssuesForClusterRun,
   fetchPhotoEndpointIssuesForRun,
+  LotsWithoutAnyPhotosStats,
   PhotoEndpointIssueReportRow,
 } from "../photo/photo-repository";
 import { PhotoClusterRunResult, PhotoSyncRunSummary } from "../photo/types";
@@ -138,7 +139,9 @@ async function fetchEndpointIssuesForSummary(
 
 function buildPhotoRetrySuccessMessage(
   summary: PhotoSyncRunSummary | PhotoClusterRunResult,
-  lotsWithoutAnyPhotosTotal: number,
+  stageLabel: "inventory_retry" | "solr_retry",
+  endpointStage: "inventoryv2_only" | "inventoryv2_then_solr_fallback",
+  lotsWithoutAnyPhotosStats: LotsWithoutAnyPhotosStats,
   lotsWithoutAnyPhotosCsv: string,
   endpointIssueStats: EndpointIssueStats,
   endpointIssuesCsv: string,
@@ -157,6 +160,8 @@ function buildPhotoRetrySuccessMessage(
 
   return [
     title,
+    `retry_stage=${stageLabel}`,
+    `endpoint_strategy=${endpointStage}`,
     `mode=${summary.mode}`,
     `lots_processed=${formatCount(lotsProcessed)}`,
     `photo_links_processed=${formatCount(photoLinksProcessed)}`,
@@ -174,7 +179,11 @@ function buildPhotoRetrySuccessMessage(
     `endpoint_issues_inventory=${formatCount(endpointIssueStats.inventoryIssues)}`,
     `endpoint_issues_solr=${formatCount(endpointIssueStats.solrIssues)}`,
     `endpoint_issues_csv=${endpointIssuesCsv}`,
-    `lots_without_any_photos_total=${formatCount(lotsWithoutAnyPhotosTotal)}`,
+    `lots_without_any_photos_total=${formatCount(lotsWithoutAnyPhotosStats.total)}`,
+    `lots_without_any_photos_missing_due_now=${formatCount(lotsWithoutAnyPhotosStats.missingDueNow)}`,
+    `lots_without_any_photos_missing_due_future=${formatCount(lotsWithoutAnyPhotosStats.missingDueFuture)}`,
+    `lots_without_any_photos_unknown=${formatCount(lotsWithoutAnyPhotosStats.unknown)}`,
+    `lots_without_any_photos_ok_status=${formatCount(lotsWithoutAnyPhotosStats.okWithoutMedia)}`,
     `lots_without_any_photos_csv=${lotsWithoutAnyPhotosCsv}`,
   ].join("\n");
 }
@@ -261,10 +270,12 @@ export async function startScheduler(): Promise<void> {
             let lotsWithoutAnyPhotosReport: GeneratedReportFile | null = null;
             let endpointIssuesReport: GeneratedReportFile | null = null;
             try {
-              const lotsWithoutAnyPhotosTotal = await countLotsWithoutAnyPhotos();
+              const lotsWithoutAnyPhotosStats = await fetchLotsWithoutAnyPhotosStats();
               const endpointIssues = await fetchEndpointIssuesForSummary(summary);
               const endpointIssueStats = summarizeEndpointIssues(endpointIssues);
-              lotsWithoutAnyPhotosReport = await tryCreateLotsWithoutAnyPhotosReport();
+              lotsWithoutAnyPhotosReport = await tryCreateLotsWithoutAnyPhotosReport(
+                "copart_lots_without_any_photos_inventory_retry"
+              );
               endpointIssuesReport = await tryCreatePhotoEndpointIssuesReport(
                 endpointIssues,
                 summary.mode === "cluster"
@@ -274,7 +285,9 @@ export async function startScheduler(): Promise<void> {
               await sendTelegramMessage(
                 buildPhotoRetrySuccessMessage(
                   summary,
-                  lotsWithoutAnyPhotosTotal,
+                  "inventory_retry",
+                  "inventoryv2_only",
+                  lotsWithoutAnyPhotosStats,
                   lotsWithoutAnyPhotosReport?.filename ?? "none",
                   endpointIssueStats,
                   endpointIssuesReport?.filename ?? "none",
@@ -289,7 +302,7 @@ export async function startScheduler(): Promise<void> {
                     filename: file.filename,
                     caption:
                       file.filename === lotsWithoutAnyPhotosReport?.filename
-                        ? `Лоти без фото (${formatCount(lotsWithoutAnyPhotosTotal)})`
+                        ? `Лоти без фото (${formatCount(lotsWithoutAnyPhotosStats.total)})`
                         : `Проблеми endpoint (${formatCount(endpointIssueStats.total)})`,
                   }))
               );
@@ -334,10 +347,12 @@ export async function startScheduler(): Promise<void> {
             let lotsWithoutAnyPhotosReport: GeneratedReportFile | null = null;
             let endpointIssuesReport: GeneratedReportFile | null = null;
             try {
-              const lotsWithoutAnyPhotosTotal = await countLotsWithoutAnyPhotos();
+              const lotsWithoutAnyPhotosStats = await fetchLotsWithoutAnyPhotosStats();
               const endpointIssues = await fetchEndpointIssuesForSummary(summary);
               const endpointIssueStats = summarizeEndpointIssues(endpointIssues);
-              lotsWithoutAnyPhotosReport = await tryCreateLotsWithoutAnyPhotosReport();
+              lotsWithoutAnyPhotosReport = await tryCreateLotsWithoutAnyPhotosReport(
+                "copart_lots_without_any_photos_solr_retry"
+              );
               endpointIssuesReport = await tryCreatePhotoEndpointIssuesReport(
                 endpointIssues,
                 summary.mode === "cluster"
@@ -347,7 +362,9 @@ export async function startScheduler(): Promise<void> {
               await sendTelegramMessage(
                 buildPhotoRetrySuccessMessage(
                   summary,
-                  lotsWithoutAnyPhotosTotal,
+                  "solr_retry",
+                  "inventoryv2_then_solr_fallback",
+                  lotsWithoutAnyPhotosStats,
                   lotsWithoutAnyPhotosReport?.filename ?? "none",
                   endpointIssueStats,
                   endpointIssuesReport?.filename ?? "none",
@@ -362,7 +379,7 @@ export async function startScheduler(): Promise<void> {
                     filename: file.filename,
                     caption:
                       file.filename === lotsWithoutAnyPhotosReport?.filename
-                        ? `Лоти без фото (${formatCount(lotsWithoutAnyPhotosTotal)})`
+                        ? `Лоти без фото (${formatCount(lotsWithoutAnyPhotosStats.total)})`
                         : `Проблеми endpoint (${formatCount(endpointIssueStats.total)})`,
                   }))
               );

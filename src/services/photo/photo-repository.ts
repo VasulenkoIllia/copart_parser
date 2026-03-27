@@ -910,6 +910,14 @@ export interface LotWithoutAnyPhotos {
   lastSeenAt: Date | null;
 }
 
+export interface LotsWithoutAnyPhotosStats {
+  total: number;
+  missingDueNow: number;
+  missingDueFuture: number;
+  unknown: number;
+  okWithoutMedia: number;
+}
+
 export async function countLotsWithoutAnyPhotos(): Promise<number> {
   const pool = getPool();
   const [rows] = await pool.query<RowDataPacket[]>(
@@ -924,6 +932,48 @@ export async function countLotsWithoutAnyPhotos(): Promise<number> {
   );
 
   return Number(rows[0]?.total ?? 0);
+}
+
+export async function fetchLotsWithoutAnyPhotosStats(): Promise<LotsWithoutAnyPhotosStats> {
+  const pool = getPool();
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `
+      SELECT
+        COUNT(*) AS total,
+        SUM(
+          CASE
+            WHEN l.photo_status = 'missing'
+              AND (l.next_photo_retry_at IS NULL OR l.next_photo_retry_at <= CURRENT_TIMESTAMP(3))
+            THEN 1
+            ELSE 0
+          END
+        ) AS missing_due_now,
+        SUM(
+          CASE
+            WHEN l.photo_status = 'missing'
+              AND l.next_photo_retry_at > CURRENT_TIMESTAMP(3)
+            THEN 1
+            ELSE 0
+          END
+        ) AS missing_due_future,
+        SUM(CASE WHEN l.photo_status = 'unknown' THEN 1 ELSE 0 END) AS unknown_total,
+        SUM(CASE WHEN l.photo_status = 'ok' THEN 1 ELSE 0 END) AS ok_without_media
+      FROM \`${env.mysql.databaseCore}\`.\`lots\` l
+      LEFT JOIN \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+        ON li.lot_number = l.lot_number
+      WHERE l.image_url IS NOT NULL
+        AND li.lot_number IS NULL
+    `
+  );
+
+  const row = rows[0] ?? {};
+  return {
+    total: Number(row.total ?? 0),
+    missingDueNow: Number(row.missing_due_now ?? 0),
+    missingDueFuture: Number(row.missing_due_future ?? 0),
+    unknown: Number(row.unknown_total ?? 0),
+    okWithoutMedia: Number(row.ok_without_media ?? 0),
+  };
 }
 
 export async function fetchLotsWithoutAnyPhotos(

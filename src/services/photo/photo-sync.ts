@@ -51,6 +51,12 @@ type ParsedEndpointLinks = {
   imgCount: number;
 };
 
+type ParsedSolrEndpointPayloadResult = {
+  parsed: ParsedEndpointLinks;
+  payloadIssueCode: string | null;
+  payloadIssueMessage: string | null;
+};
+
 let solrFallbackThrottleQueue: Promise<void> = Promise.resolve();
 let solrFallbackNextAllowedAt = 0;
 
@@ -234,9 +240,31 @@ function parseEndpointPayload(
   };
 }
 
-function parseSolrEndpointPayload(lotNumber: number, payload: unknown): ParsedEndpointLinks {
-  if (!isObject(payload)) {
-    return { fullLinks: [], hdLinks: [], otherLinks: [], imgCount: 0 };
+function parseSolrEndpointPayload(
+  lotNumber: number,
+  payload: unknown
+): ParsedSolrEndpointPayloadResult {
+  if (!isObject(payload) || Array.isArray(payload)) {
+    if (typeof payload === "string") {
+      const trimmed = payload.trim();
+      const normalized = trimmed.toLowerCase();
+      const looksLikeHtml =
+        normalized.startsWith("<!doctype html") ||
+        normalized.startsWith("<html") ||
+        normalized.includes("<html") ||
+        normalized.includes("_incapsula_resource") ||
+        normalized.includes("incapsula");
+      return {
+        parsed: { fullLinks: [], hdLinks: [], otherLinks: [], imgCount: 0 },
+        payloadIssueCode: looksLikeHtml ? "SOLR_ANTIBOT_HTML" : "SOLR_NON_JSON_PAYLOAD",
+        payloadIssueMessage: trimmed.slice(0, 300),
+      };
+    }
+    return {
+      parsed: { fullLinks: [], hdLinks: [], otherLinks: [], imgCount: 0 },
+      payloadIssueCode: "SOLR_NON_JSON_PAYLOAD",
+      payloadIssueMessage: payload === null ? "null payload" : typeof payload,
+    };
   }
 
   const data = payload as SolrLotImagesEndpointPayload;
@@ -303,10 +331,14 @@ function parseSolrEndpointPayload(lotNumber: number, payload: unknown): ParsedEn
   }
 
   return {
-    fullLinks: Array.from(fullMap.values()),
-    hdLinks: Array.from(hdMap.values()),
-    otherLinks: Array.from(otherMap.values()),
-    imgCount: totalElements,
+    parsed: {
+      fullLinks: Array.from(fullMap.values()),
+      hdLinks: Array.from(hdMap.values()),
+      otherLinks: Array.from(otherMap.values()),
+      imgCount: totalElements,
+    },
+    payloadIssueCode: null,
+    payloadIssueMessage: null,
   };
 }
 
@@ -426,71 +458,64 @@ async function processLot(
   };
 
   let endpointStatus: number | null = null;
+  let endpointErrorMessage: string | null = null;
   try {
-    const response = await httpRequest<unknown>(
-      {
-        method: "GET",
-        url: endpointUrl,
-        timeout: env.photo.httpTimeoutMs,
-        maxRedirects: 5,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-          Accept: "application/json, text/plain, */*",
-          Referer: "https://www.copart.com/",
+    let inventoryPayload: unknown = null;
+    try {
+      const response = await httpRequest<unknown>(
+        {
+          method: "GET",
+          url: endpointUrl,
+          timeout: env.photo.httpTimeoutMs,
+          maxRedirects: 5,
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+            Accept: "application/json, text/plain, */*",
+            Referer: "https://www.copart.com/",
+          },
         },
-      },
-      {
-        retries: env.photo.endpointRetries,
-        retryDelayMs: 1500,
-      }
-    );
-
-    endpointStatus = response.status;
-    await logPhotoAttempt(candidate.lotNumber, endpointUrl, "lot_images_endpoint", endpointStatus, null, null);
-
-    if (endpointStatus === 404) {
-      const backoff = calculateBackoffMinutes(candidate.photo404Count + 1);
-      await markLotPhotoMissingOn404(candidate.lotNumber, backoff);
-      logResult({
-        lotNumber: candidate.lotNumber,
-        status: "missing",
-        reason: "endpoint_404",
+        {
+          retries: env.photo.endpointRetries,
+          retryDelayMs: 1500,
+        }
+      );
+      endpointStatus = response.status;
+      inventoryPayload = response.data;
+      await logPhotoAttempt(candidate.lotNumber, endpointUrl, "lot_images_endpoint", endpointStatus, null, null);
+    } catch (error) {
+      endpointErrorMessage = error instanceof Error ? error.message : String(error);
+      await logPhotoAttempt(
+        candidate.lotNumber,
+        endpointUrl,
+        "lot_images_endpoint",
         endpointStatus,
-        backoffMinutes: backoff,
-      });
-      counters.lotsProcessed += 1;
-      counters.lotsMissing += 1;
-      counters.http404Count += 1;
-      counters.endpoint404Lots += 1;
-      return;
+        "ENDPOINT_EXCEPTION",
+        endpointErrorMessage
+      );
     }
 
-    if (endpointStatus < 200 || endpointStatus >= 300) {
-      const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
-      await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
-      logResult({
-        lotNumber: candidate.lotNumber,
-        status: "missing",
-        reason: "endpoint_non_2xx",
-        endpointStatus,
-        backoffMinutes: backoff,
-      });
-      counters.lotsProcessed += 1;
-      counters.lotsMissing += 1;
-      return;
-    }
-
-    let parsed = parseEndpointPayload(candidate.lotNumber, response.data);
+    let parsed: ParsedEndpointLinks =
+      endpointStatus !== null && endpointStatus >= 200 && endpointStatus < 300
+        ? parseEndpointPayload(candidate.lotNumber, inventoryPayload)
+        : { fullLinks: [], hdLinks: [], otherLinks: [], imgCount: 0 };
     let parsedSource: "inventoryv2" | "solr" = "inventoryv2";
     let solrFallbackTried = false;
     let solrFallbackStatus: number | null = null;
+    let solrPayloadIssueCode: string | null = null;
+    let solrPayloadIssueMessage: string | null = null;
+    const inventoryHasUsablePayload = countParsedLinks(parsed) > 0 && parsed.imgCount > 0;
+    const inventoryRequestFailed =
+      endpointErrorMessage !== null ||
+      endpointStatus === null ||
+      endpointStatus < 200 ||
+      endpointStatus >= 300;
 
     if (
       candidate.photoStatus === "missing" &&
       enableSolrFallback &&
       env.photo.solrFallbackEnabled &&
-      (countParsedLinks(parsed) === 0 || parsed.imgCount === 0)
+      (inventoryRequestFailed || !inventoryHasUsablePayload)
     ) {
       solrFallbackTried = true;
       const solrUrl = buildSolrLotImagesUrl(candidate.lotNumber);
@@ -526,10 +551,25 @@ async function processLot(
         );
 
         if (solrFallbackStatus >= 200 && solrFallbackStatus < 300) {
-          const parsedSolr = parseSolrEndpointPayload(candidate.lotNumber, solrResponse.data);
+          const parsedSolrResult = parseSolrEndpointPayload(candidate.lotNumber, solrResponse.data);
+          const parsedSolr = parsedSolrResult.parsed;
+          solrPayloadIssueCode = parsedSolrResult.payloadIssueCode;
+          solrPayloadIssueMessage = parsedSolrResult.payloadIssueMessage;
+          if (solrPayloadIssueCode) {
+            await logPhotoAttempt(
+              candidate.lotNumber,
+              solrUrl,
+              "lot_images_endpoint",
+              solrFallbackStatus,
+              solrPayloadIssueCode,
+              solrPayloadIssueMessage
+            );
+          }
           if (countParsedLinks(parsedSolr) > 0 && parsedSolr.imgCount > 0) {
             parsed = parsedSolr;
             parsedSource = "solr";
+            endpointStatus = solrFallbackStatus;
+            endpointErrorMessage = null;
           }
         }
       } catch (error) {
@@ -549,13 +589,31 @@ async function processLot(
       if (storageMode === "replace") {
         await clearLotImages(candidate.lotNumber);
       }
+      const fallbackStatus =
+        solrFallbackTried && solrFallbackStatus !== null ? solrFallbackStatus : endpointStatus;
       const backoff = calculateBackoffMinutes(Math.max(1, candidate.photo404Count + 1));
-      await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
+      if (fallbackStatus === 404) {
+        await markLotPhotoMissingOn404(candidate.lotNumber, backoff);
+      } else {
+        await markLotPhotoMissingTemporary(candidate.lotNumber, backoff);
+      }
+
+      const reason =
+        fallbackStatus === 404
+          ? "endpoint_404"
+          : fallbackStatus !== null && (fallbackStatus < 200 || fallbackStatus >= 300)
+            ? "endpoint_non_2xx"
+            : solrPayloadIssueCode
+              ? "invalid_endpoint_payload"
+            : endpointErrorMessage
+              ? "endpoint_exception"
+              : "empty_payload";
+
       logResult({
         lotNumber: candidate.lotNumber,
         status: "missing",
-        reason: "empty_payload",
-        endpointStatus,
+        reason,
+        endpointStatus: fallbackStatus,
         imgCount: parsed.imgCount,
         parsedHdLinks: parsed.hdLinks.length,
         parsedFullLinks: parsed.fullLinks.length,
@@ -563,10 +621,15 @@ async function processLot(
         linksSource: parsedSource,
         solrFallbackTried,
         solrFallbackStatus,
+        solrPayloadIssueCode,
         backoffMinutes: backoff,
       });
       counters.lotsProcessed += 1;
       counters.lotsMissing += 1;
+      if (fallbackStatus === 404) {
+        counters.http404Count += 1;
+        counters.endpoint404Lots += 1;
+      }
       return;
     }
 
