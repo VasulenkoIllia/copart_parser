@@ -83,8 +83,8 @@ docker compose run --rm app node dist/index.js db:migrate
 
 ```bash
 INGEST_CRON=0 0,5,10,15,20 * * *
-PHOTO_RETRY_CRON=
-PHOTO_SOLR_RETRY_CRON=
+PHOTO_RETRY_CRON=*/30 * * * *
+PHOTO_SOLR_RETRY_CRON=15,45 * * * *
 SCHEDULER_RUN_ON_START=true
 
 RETENTION_ENABLED=true
@@ -143,6 +143,14 @@ docker compose up -d mysql app
 - яка конфігураційна паралельність photo-stage (`workers * fetchConcurrency`);
 - час `ingest`, час `photo`, загальний час оновлення.
 - якщо є проблемні дані, додатково прикріплюється CSV `http_404` (усі HTTP `404` за поточний photo-run).
+
+Для окремих retry-ранiв (`PHOTO_RETRY_CRON`, `PHOTO_SOLR_RETRY_CRON`) в Telegram приходить окремий звіт з:
+
+- метриками обробки retry-лотів;
+- `lots_without_any_photos_total` + CSV `lots_without_any_photos`;
+- `endpoint_issues_total` (+ `429/403/404`, `inventory/solr`) + CSV `endpoint_issues` за поточне вікно run.
+
+Помилки retry-задач (`PHOTO_SYNC`, `PHOTO_SOLR_RETRY`) також відправляються в Telegram як error alert.
 
 Команди для "чистого" запуску:
 
@@ -310,9 +318,9 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 
 ### Фото
 
-- Парсити URL з endpoint `lotImages`: спочатку перевіряти `hd`, а якщо валідних `hd` немає — fallback на `full`.
+- Парсити URL з endpoint `lotImages`: пріоритет tier-ів `full` -> `hd` -> `other`.
 - У `copart_media.lot_images` зберігати тільки якісні full-size фото.
-- Поточний performance-профіль: пріоритет у `hd`; `full` використовується тільки як fallback, `thumb`/`video` ігноруються.
+- `thumb`/`video` ігноруються.
 - Додано кеш перевірки по `url_hash`: якщо URL уже був `ok + full_size`, повторний `GET` пропускається.
 - У `photo_fetch_attempts` логуються тільки `404` і помилки (`error`/non-2xx), успішні `2xx/206` більше не засмічують таблицю.
 - `check_status = ok`,
@@ -321,18 +329,18 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - всі унікальні good URL (накопичення між прогонами).
 - Запис фото працює в merge-режимі: вже знайдені good фото не видаляються при повторних прогонах.
 - Всі спроби запитів і помилки зберігати в `copart_media.photo_fetch_attempts`.
-- Кандидати на `photo:sync` визначаються так: лот є в актуальному `copart_core.lots`, але для нього ще немає жодного валідного `hd + full-size` фото в `copart_media.lot_images`.
-- Якщо `hd` не пройшов валідацію, у media може бути збережений `full` fallback; лот при цьому лишається в retry-потоці, щоб наступні рани могли догрузити `hd`.
+- Кандидати на `photo:sync` визначаються так: лот є в актуальному `copart_core.lots`, але для нього ще немає жодного валідного `full-size` фото (`variant in ('hd','full','unknown')`) у `copart_media.lot_images`.
+- Якщо `inventoryv2` для `missing`-лота повернув порожній payload, у `PHOTO_SOLR_RETRY` може бути fallback на solr endpoint (керується `PHOTO_SOLR_FALLBACK_*`).
 
 ### Правило "повні фото"
 
 Лот вважається `photo_ok`, якщо:
 
 - у `copart_media.lot_images` є хоча б одне фото з `check_status = ok`;
-- це фото має `variant = hd` і `is_full_size = 1`;
-- фото пройшло пороги якості (мін. ширина/висота і/або розмір).
+- це фото має `variant in ('hd', 'full', 'unknown')` і `is_full_size = 1`;
+- фото пройшло поріг якості за мінімальною шириною (`PHOTO_MIN_WIDTH`).
 
-Якщо валідних `hd + full-size` фото ще немає, лот залишається кандидатом на повторну перевірку.
+Якщо валідних `full-size` фото ще немає, лот залишається кандидатом на повторну перевірку.
 
 ## Конфігурація (тільки через ENV)
 
