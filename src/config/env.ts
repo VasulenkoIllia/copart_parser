@@ -16,6 +16,7 @@ interface AppEnv {
   schedule: {
     ingestCron: string;
     photoRetryCron: string;
+    photoSolrRetryCron: string;
     runLockTtlSec: number;
     runOnStart: boolean;
   };
@@ -72,6 +73,9 @@ interface AppEnv {
     progressEveryLots: number;
     httpTimeoutMs: number;
     endpointRetries: number;
+    solrFallbackEnabled: boolean;
+    solrFallbackMinIntervalMs: number;
+    solrFallbackRetries: number;
     imageRetries: number;
     logLotResults: boolean;
     validateByHeadFirst: boolean;
@@ -255,6 +259,7 @@ const env: AppEnv = {
   schedule: {
     ingestCron: optional("INGEST_CRON", "0 0,5,10,15,20 * * *"),
     photoRetryCron: optional("PHOTO_RETRY_CRON", ""),
+    photoSolrRetryCron: optional("PHOTO_SOLR_RETRY_CRON", ""),
     runLockTtlSec: toInt("RUN_LOCK_TTL_SEC", 16200),
     runOnStart: toBoolean("SCHEDULER_RUN_ON_START", false),
   },
@@ -311,6 +316,9 @@ const env: AppEnv = {
     progressEveryLots: toInt("PHOTO_PROGRESS_EVERY_LOTS", 100),
     httpTimeoutMs: toInt("PHOTO_HTTP_TIMEOUT_MS", 20_000),
     endpointRetries: toInt("PHOTO_ENDPOINT_RETRIES", 3),
+    solrFallbackEnabled: toBoolean("PHOTO_SOLR_FALLBACK_ENABLED", false),
+    solrFallbackMinIntervalMs: toInt("PHOTO_SOLR_FALLBACK_MIN_INTERVAL_MS", 1000),
+    solrFallbackRetries: toInt("PHOTO_SOLR_FALLBACK_RETRIES", 1),
     imageRetries: toInt("PHOTO_IMAGE_RETRIES", 3),
     logLotResults: toBoolean("PHOTO_LOG_LOT_RESULTS", false),
     validateByHeadFirst: toBoolean("PHOTO_VALIDATE_BY_HEAD_FIRST", true),
@@ -436,6 +444,14 @@ if (env.photo.progressEveryLots < 1) {
 
 if (env.photo.minWidth < 1 || env.photo.minHeight < 1 || env.photo.minContentLength < 0) {
   throw new Error("PHOTO_MIN_WIDTH/PHOTO_MIN_HEIGHT must be >= 1 and PHOTO_MIN_CONTENT_LENGTH must be >= 0");
+}
+
+if (env.photo.solrFallbackMinIntervalMs < 0) {
+  throw new Error("PHOTO_SOLR_FALLBACK_MIN_INTERVAL_MS must be >= 0");
+}
+
+if (env.photo.solrFallbackRetries < 1) {
+  throw new Error("PHOTO_SOLR_FALLBACK_RETRIES must be >= 1");
 }
 
 if (

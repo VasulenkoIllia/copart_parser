@@ -3,13 +3,18 @@ import env from "../../config/env";
 import { logger } from "../../lib/logger";
 import { runPhotoCluster } from "../photo/photo-cluster";
 import { runPhotoSync } from "../photo/photo-sync";
-import { countLotsWithoutAnyPhotos } from "../photo/photo-repository";
+import {
+  countLotsWithoutAnyPhotos,
+  fetchPhotoEndpointIssuesForClusterRun,
+  fetchPhotoEndpointIssuesForRun,
+  PhotoEndpointIssueReportRow,
+} from "../photo/photo-repository";
 import { PhotoClusterRunResult, PhotoSyncRunSummary } from "../photo/types";
 import { runFullPipelineOnce } from "../pipeline/run-once";
 import { runRetentionCleanup } from "../maintenance/retention";
 import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { cleanupReportFiles } from "../reports/csv-report";
-import { tryCreateLotsWithoutAnyPhotosReport } from "../reports/run-artifacts";
+import { tryCreateLotsWithoutAnyPhotosReport, tryCreatePhotoEndpointIssuesReport } from "../reports/run-artifacts";
 import { GeneratedReportFile } from "../reports/types";
 import { startTelegramBotPolling } from "../telegram/bot";
 
@@ -80,10 +85,64 @@ function formatCount(value: number): string {
   return new Intl.NumberFormat("uk-UA").format(value);
 }
 
+interface EndpointIssueStats {
+  total: number;
+  rateLimited429: number;
+  forbidden403: number;
+  notFound404: number;
+  inventoryIssues: number;
+  solrIssues: number;
+}
+
+function summarizeEndpointIssues(attempts: PhotoEndpointIssueReportRow[]): EndpointIssueStats {
+  let rateLimited429 = 0;
+  let forbidden403 = 0;
+  let notFound404 = 0;
+  let inventoryIssues = 0;
+  let solrIssues = 0;
+
+  for (const attempt of attempts) {
+    if (attempt.httpStatus === 429) {
+      rateLimited429 += 1;
+    }
+    if (attempt.httpStatus === 403) {
+      forbidden403 += 1;
+    }
+    if (attempt.httpStatus === 404) {
+      notFound404 += 1;
+    }
+    if (attempt.endpointSource === "inventoryv2") {
+      inventoryIssues += 1;
+    } else if (attempt.endpointSource === "solr") {
+      solrIssues += 1;
+    }
+  }
+
+  return {
+    total: attempts.length,
+    rateLimited429,
+    forbidden403,
+    notFound404,
+    inventoryIssues,
+    solrIssues,
+  };
+}
+
+async function fetchEndpointIssuesForSummary(
+  summary: PhotoSyncRunSummary | PhotoClusterRunResult
+): Promise<PhotoEndpointIssueReportRow[]> {
+  return summary.mode === "cluster"
+    ? fetchPhotoEndpointIssuesForClusterRun(summary.clusterRunId)
+    : fetchPhotoEndpointIssuesForRun(summary.runId);
+}
+
 function buildPhotoRetrySuccessMessage(
   summary: PhotoSyncRunSummary | PhotoClusterRunResult,
   lotsWithoutAnyPhotosTotal: number,
-  lotsWithoutAnyPhotosCsv: string
+  lotsWithoutAnyPhotosCsv: string,
+  endpointIssueStats: EndpointIssueStats,
+  endpointIssuesCsv: string,
+  title: string = "[PHOTO RETRY] success"
 ): string {
   const lotsProcessed = summary.mode === "cluster" ? summary.totalLotsProcessed : summary.lotsProcessed;
   const photoLinksProcessed =
@@ -97,7 +156,7 @@ function buildPhotoRetrySuccessMessage(
   const endpoint404Lots = summary.mode === "cluster" ? summary.totalEndpoint404Lots : summary.endpoint404Lots;
 
   return [
-    "[PHOTO RETRY] success",
+    title,
     `mode=${summary.mode}`,
     `lots_processed=${formatCount(lotsProcessed)}`,
     `photo_links_processed=${formatCount(photoLinksProcessed)}`,
@@ -108,6 +167,13 @@ function buildPhotoRetrySuccessMessage(
     `images_stored_hd=${formatCount(imagesStoredHd)}`,
     `images_stored_full=${formatCount(imagesStoredFull)}`,
     `endpoint_404_lots=${formatCount(endpoint404Lots)}`,
+    `endpoint_issues_total=${formatCount(endpointIssueStats.total)}`,
+    `endpoint_429_rate_limited=${formatCount(endpointIssueStats.rateLimited429)}`,
+    `endpoint_403_forbidden=${formatCount(endpointIssueStats.forbidden403)}`,
+    `endpoint_404_not_found=${formatCount(endpointIssueStats.notFound404)}`,
+    `endpoint_issues_inventory=${formatCount(endpointIssueStats.inventoryIssues)}`,
+    `endpoint_issues_solr=${formatCount(endpointIssueStats.solrIssues)}`,
+    `endpoint_issues_csv=${endpointIssuesCsv}`,
     `lots_without_any_photos_total=${formatCount(lotsWithoutAnyPhotosTotal)}`,
     `lots_without_any_photos_csv=${lotsWithoutAnyPhotosCsv}`,
   ].join("\n");
@@ -138,11 +204,13 @@ async function safeRun(
 
 export async function startScheduler(): Promise<void> {
   const photoRetryCron = env.schedule.photoRetryCron.trim();
+  const photoSolrRetryCron = env.schedule.photoSolrRetryCron.trim();
   const retentionCron = env.maintenance.cron.trim();
 
   logger.info("Scheduler started", {
     ingestCron: env.schedule.ingestCron,
     photoRetryCron: photoRetryCron || "disabled",
+    photoSolrRetryCron: photoSolrRetryCron || "disabled",
     retentionEnabled: env.maintenance.enabled,
     retentionCron: retentionCron || "disabled",
     timezone: env.app.tz,
@@ -174,39 +242,135 @@ export async function startScheduler(): Promise<void> {
           async () => {
             const summary =
               env.photo.workerTotal > 1
-                ? await runPhotoCluster()
-                : (await runPhotoSync({ notifySuccess: false, notifyError: false })).summary ?? null;
+                ? await runPhotoCluster({
+                    candidateMode: "missing_only",
+                    enableSolrFallback: false,
+                  })
+                : (
+                    await runPhotoSync({
+                      notifySuccess: false,
+                      notifyError: false,
+                      candidateMode: "missing_only",
+                      enableSolrFallback: false,
+                    })
+                  ).summary ?? null;
             if (!summary || !env.telegram.sendSuccessSummary) {
               return;
             }
 
             let lotsWithoutAnyPhotosReport: GeneratedReportFile | null = null;
+            let endpointIssuesReport: GeneratedReportFile | null = null;
             try {
               const lotsWithoutAnyPhotosTotal = await countLotsWithoutAnyPhotos();
+              const endpointIssues = await fetchEndpointIssuesForSummary(summary);
+              const endpointIssueStats = summarizeEndpointIssues(endpointIssues);
               lotsWithoutAnyPhotosReport = await tryCreateLotsWithoutAnyPhotosReport();
+              endpointIssuesReport = await tryCreatePhotoEndpointIssuesReport(
+                endpointIssues,
+                summary.mode === "cluster"
+                  ? `copart_endpoint_issues_cluster_${summary.clusterRunId}`
+                  : `copart_endpoint_issues_run_${summary.runId}`
+              );
               await sendTelegramMessage(
                 buildPhotoRetrySuccessMessage(
                   summary,
                   lotsWithoutAnyPhotosTotal,
-                  lotsWithoutAnyPhotosReport?.filename ?? "none"
+                  lotsWithoutAnyPhotosReport?.filename ?? "none",
+                  endpointIssueStats,
+                  endpointIssuesReport?.filename ?? "none",
+                  "[PHOTO RETRY] success"
                 )
               );
               await sendTelegramDocuments(
-                lotsWithoutAnyPhotosReport
-                  ? [
-                      {
-                        path: lotsWithoutAnyPhotosReport.path,
-                        filename: lotsWithoutAnyPhotosReport.filename,
-                        caption: `Лоти без фото (${formatCount(lotsWithoutAnyPhotosTotal)})`,
-                      },
-                    ]
-                  : []
+                [lotsWithoutAnyPhotosReport, endpointIssuesReport]
+                  .filter((file): file is GeneratedReportFile => Boolean(file))
+                  .map(file => ({
+                    path: file.path,
+                    filename: file.filename,
+                    caption:
+                      file.filename === lotsWithoutAnyPhotosReport?.filename
+                        ? `Лоти без фото (${formatCount(lotsWithoutAnyPhotosTotal)})`
+                        : `Проблеми endpoint (${formatCount(endpointIssueStats.total)})`,
+                  }))
               );
             } finally {
-              await cleanupReportFiles([lotsWithoutAnyPhotosReport]);
+              await cleanupReportFiles([lotsWithoutAnyPhotosReport, endpointIssuesReport]);
             }
           },
-          { notifyError: env.photo.workerTotal > 1 }
+          { notifyError: true }
+        );
+      },
+      {
+        timezone: env.app.tz,
+      }
+    );
+  }
+
+  if (photoSolrRetryCron) {
+    cron.schedule(
+      photoSolrRetryCron,
+      () => {
+        void safeRun(
+          "PHOTO_SOLR_RETRY",
+          async () => {
+            const summary =
+              env.photo.workerTotal > 1
+                ? await runPhotoCluster({
+                    candidateMode: "missing_only",
+                    enableSolrFallback: true,
+                  })
+                : (
+                    await runPhotoSync({
+                      notifySuccess: false,
+                      notifyError: false,
+                      candidateMode: "missing_only",
+                      enableSolrFallback: true,
+                    })
+                  ).summary ?? null;
+            if (!summary || !env.telegram.sendSuccessSummary) {
+              return;
+            }
+
+            let lotsWithoutAnyPhotosReport: GeneratedReportFile | null = null;
+            let endpointIssuesReport: GeneratedReportFile | null = null;
+            try {
+              const lotsWithoutAnyPhotosTotal = await countLotsWithoutAnyPhotos();
+              const endpointIssues = await fetchEndpointIssuesForSummary(summary);
+              const endpointIssueStats = summarizeEndpointIssues(endpointIssues);
+              lotsWithoutAnyPhotosReport = await tryCreateLotsWithoutAnyPhotosReport();
+              endpointIssuesReport = await tryCreatePhotoEndpointIssuesReport(
+                endpointIssues,
+                summary.mode === "cluster"
+                  ? `copart_endpoint_issues_cluster_${summary.clusterRunId}`
+                  : `copart_endpoint_issues_run_${summary.runId}`
+              );
+              await sendTelegramMessage(
+                buildPhotoRetrySuccessMessage(
+                  summary,
+                  lotsWithoutAnyPhotosTotal,
+                  lotsWithoutAnyPhotosReport?.filename ?? "none",
+                  endpointIssueStats,
+                  endpointIssuesReport?.filename ?? "none",
+                  "[PHOTO SOLR RETRY] success"
+                )
+              );
+              await sendTelegramDocuments(
+                [lotsWithoutAnyPhotosReport, endpointIssuesReport]
+                  .filter((file): file is GeneratedReportFile => Boolean(file))
+                  .map(file => ({
+                    path: file.path,
+                    filename: file.filename,
+                    caption:
+                      file.filename === lotsWithoutAnyPhotosReport?.filename
+                        ? `Лоти без фото (${formatCount(lotsWithoutAnyPhotosTotal)})`
+                        : `Проблеми endpoint (${formatCount(endpointIssueStats.total)})`,
+                  }))
+              );
+            } finally {
+              await cleanupReportFiles([lotsWithoutAnyPhotosReport, endpointIssuesReport]);
+            }
+          },
+          { notifyError: true }
         );
       },
       {
@@ -240,6 +404,8 @@ export async function startScheduler(): Promise<void> {
         `Cron CSV: ${env.schedule.ingestCron}`,
         `Окремий photo retry: ${describeCron(photoRetryCron)}`,
         ...(photoRetryCron ? [`Cron photo retry: ${photoRetryCron}`] : []),
+        `Окремий photo solr retry: ${describeCron(photoSolrRetryCron)}`,
+        ...(photoSolrRetryCron ? [`Cron photo solr retry: ${photoSolrRetryCron}`] : []),
         `Retention cleanup: ${env.maintenance.enabled ? describeCron(retentionCron) : "вимкнено"}`,
         ...(env.maintenance.enabled && retentionCron ? [`Cron retention: ${retentionCron}`] : []),
         `Часова зона: ${env.app.tz}`,

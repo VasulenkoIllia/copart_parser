@@ -23,6 +23,7 @@ import {
   replaceLotImages,
   selectImagesForStorage,
   summarizeImageChecks,
+  PhotoCandidateMode,
 } from "./photo-repository";
 import { cleanupReportFiles } from "../reports/csv-report";
 import { tryCreatePhoto404ReportForRun } from "../reports/run-artifacts";
@@ -35,17 +36,64 @@ import {
   PhotoRunCounters,
   PhotoSyncExecutionResult,
   PhotoSyncRunSummary,
+  SolrLotImagesEndpointPayload,
 } from "./types";
 
 interface ProcessLotOptions {
   storageMode?: "replace" | "merge";
+  enableSolrFallback?: boolean;
 }
+
+type ParsedEndpointLinks = {
+  fullLinks: ParsedLotImageLink[];
+  hdLinks: ParsedLotImageLink[];
+  otherLinks: ParsedLotImageLink[];
+  imgCount: number;
+};
+
+let solrFallbackThrottleQueue: Promise<void> = Promise.resolve();
+let solrFallbackNextAllowedAt = 0;
 
 function logLotResult(meta: Record<string, unknown>): void {
   if (!env.photo.logLotResults) {
     return;
   }
   logger.info("Photo lot result", meta);
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitSolrFallbackThrottleSlot(): Promise<void> {
+  const minIntervalMs = env.photo.solrFallbackMinIntervalMs;
+  if (minIntervalMs <= 0) {
+    return;
+  }
+
+  const previous = solrFallbackThrottleQueue;
+  let releaseCurrent!: () => void;
+  solrFallbackThrottleQueue = new Promise(resolve => {
+    releaseCurrent = resolve;
+  });
+
+  await previous;
+
+  try {
+    const now = Date.now();
+    const waitMs = Math.max(0, solrFallbackNextAllowedAt - now);
+    if (waitMs > 0) {
+      await delay(waitMs);
+    }
+    solrFallbackNextAllowedAt = Date.now() + minIntervalMs;
+  } finally {
+    releaseCurrent();
+  }
 }
 
 function createCounters(): PhotoRunCounters {
@@ -106,12 +154,7 @@ function hasAcceptedImageExtension(url: string): boolean {
 function parseEndpointPayload(
   lotNumber: number,
   payload: unknown
-): {
-  fullLinks: ParsedLotImageLink[];
-  hdLinks: ParsedLotImageLink[];
-  otherLinks: ParsedLotImageLink[];
-  imgCount: number;
-} {
+): ParsedEndpointLinks {
   if (!isObject(payload)) {
     return { fullLinks: [], hdLinks: [], otherLinks: [], imgCount: 0 };
   }
@@ -189,6 +232,90 @@ function parseEndpointPayload(
     otherLinks,
     imgCount,
   };
+}
+
+function parseSolrEndpointPayload(lotNumber: number, payload: unknown): ParsedEndpointLinks {
+  if (!isObject(payload)) {
+    return { fullLinks: [], hdLinks: [], otherLinks: [], imgCount: 0 };
+  }
+
+  const data = payload as SolrLotImagesEndpointPayload;
+  const totalElements = Number(data.data?.imagesList?.totalElements ?? 0);
+  const content = Array.isArray(data.data?.imagesList?.content) ? data.data?.imagesList?.content : [];
+
+  const fullMap = new Map<string, ParsedLotImageLink>();
+  const hdMap = new Map<string, ParsedLotImageLink>();
+  const otherMap = new Map<string, ParsedLotImageLink>();
+
+  const addLink = (
+    sequence: number,
+    urlCandidate: string | undefined,
+    preferredVariant: "full" | "hd" | "unknown"
+  ): void => {
+    if (!urlCandidate) {
+      return;
+    }
+    const cleanUrl = String(urlCandidate).trim();
+    if (!cleanUrl) {
+      return;
+    }
+    if (isThumbSuffixImageUrl(cleanUrl)) {
+      return;
+    }
+    const normalized = stripUrlQueryAndHash(cleanUrl.toLowerCase());
+    if (normalized.endsWith(".mp4")) {
+      return;
+    }
+
+    let targetMap: Map<string, ParsedLotImageLink> | null = null;
+    let variant: ParsedLotImageLink["variant"] | null = null;
+
+    if (preferredVariant === "full" && isFullSuffixImageUrl(cleanUrl)) {
+      targetMap = fullMap;
+      variant = "full";
+    } else if (preferredVariant === "hd" && (isHdSuffixImageUrl(cleanUrl) || hasAcceptedImageExtension(cleanUrl))) {
+      targetMap = hdMap;
+      variant = "hd";
+    } else if (hasAcceptedImageExtension(cleanUrl)) {
+      targetMap = otherMap;
+      variant = "unknown";
+    }
+
+    if (!targetMap || !variant) {
+      return;
+    }
+
+    const key = `${sequence}:${cleanUrl}`;
+    if (!targetMap.has(key)) {
+      targetMap.set(key, {
+        lotNumber,
+        sequence,
+        variant,
+        url: cleanUrl,
+      });
+    }
+  };
+
+  for (const image of content) {
+    const sequence = Number.isFinite(Number(image.imageSeqNumber)) ? Number(image.imageSeqNumber) : 0;
+    addLink(sequence, image.fullUrl, "full");
+    addLink(sequence, image.highResUrl, "hd");
+  }
+
+  return {
+    fullLinks: Array.from(fullMap.values()),
+    hdLinks: Array.from(hdMap.values()),
+    otherLinks: Array.from(otherMap.values()),
+    imgCount: totalElements,
+  };
+}
+
+function countParsedLinks(parsed: ParsedEndpointLinks): number {
+  return parsed.fullLinks.length + parsed.hdLinks.length + parsed.otherLinks.length;
+}
+
+function buildSolrLotImagesUrl(lotNumber: number): string {
+  return `https://www.copart.com/public/data/lotdetails/solr/lotImages/${lotNumber}/USA`;
 }
 
 async function runWithConcurrency<T>(
@@ -279,6 +406,7 @@ async function processLot(
   options: ProcessLotOptions = {}
 ): Promise<void> {
   const storageMode = options.storageMode ?? "merge";
+  const enableSolrFallback = options.enableSolrFallback ?? false;
   const lotStartedAt = Date.now();
   const endpointProtocol = env.proxy.mode === "direct" ? "https" : "http";
   const endpointUrl =
@@ -353,8 +481,70 @@ async function processLot(
       return;
     }
 
-    const parsed = parseEndpointPayload(candidate.lotNumber, response.data);
-    const supportedLinksCount = parsed.fullLinks.length + parsed.hdLinks.length + parsed.otherLinks.length;
+    let parsed = parseEndpointPayload(candidate.lotNumber, response.data);
+    let parsedSource: "inventoryv2" | "solr" = "inventoryv2";
+    let solrFallbackTried = false;
+    let solrFallbackStatus: number | null = null;
+
+    if (
+      candidate.photoStatus === "missing" &&
+      enableSolrFallback &&
+      env.photo.solrFallbackEnabled &&
+      (countParsedLinks(parsed) === 0 || parsed.imgCount === 0)
+    ) {
+      solrFallbackTried = true;
+      const solrUrl = buildSolrLotImagesUrl(candidate.lotNumber);
+      try {
+        await waitSolrFallbackThrottleSlot();
+        const solrResponse = await httpRequest<unknown>(
+          {
+            method: "GET",
+            url: solrUrl,
+            timeout: env.photo.httpTimeoutMs,
+            maxRedirects: 5,
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+              Accept: "application/json, text/plain, */*",
+              Referer: "https://www.copart.com/",
+            },
+          },
+          {
+            retries: env.photo.solrFallbackRetries,
+            retryDelayMs: 1500,
+          }
+        );
+
+        solrFallbackStatus = solrResponse.status;
+        await logPhotoAttempt(
+          candidate.lotNumber,
+          solrUrl,
+          "lot_images_endpoint",
+          solrFallbackStatus,
+          null,
+          null
+        );
+
+        if (solrFallbackStatus >= 200 && solrFallbackStatus < 300) {
+          const parsedSolr = parseSolrEndpointPayload(candidate.lotNumber, solrResponse.data);
+          if (countParsedLinks(parsedSolr) > 0 && parsedSolr.imgCount > 0) {
+            parsed = parsedSolr;
+            parsedSource = "solr";
+          }
+        }
+      } catch (error) {
+        await logPhotoAttempt(
+          candidate.lotNumber,
+          solrUrl,
+          "lot_images_endpoint",
+          solrFallbackStatus,
+          "SOLR_ENDPOINT_EXCEPTION",
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    }
+
+    const supportedLinksCount = countParsedLinks(parsed);
     if (supportedLinksCount === 0 || parsed.imgCount === 0) {
       if (storageMode === "replace") {
         await clearLotImages(candidate.lotNumber);
@@ -370,6 +560,9 @@ async function processLot(
         parsedHdLinks: parsed.hdLinks.length,
         parsedFullLinks: parsed.fullLinks.length,
         parsedOtherLinks: parsed.otherLinks.length,
+        linksSource: parsedSource,
+        solrFallbackTried,
+        solrFallbackStatus,
         backoffMinutes: backoff,
       });
       counters.lotsProcessed += 1;
@@ -438,6 +631,9 @@ async function processLot(
         parsedHdLinks: parsed.hdLinks.length,
         parsedFullLinks: parsed.fullLinks.length,
         parsedOtherLinks: parsed.otherLinks.length,
+        linksSource: parsedSource,
+        solrFallbackTried,
+        solrFallbackStatus,
         selectedTier,
         storedGoodImages: storageImages.length,
         storedVariant,
@@ -458,6 +654,9 @@ async function processLot(
         parsedHdLinks: parsed.hdLinks.length,
         parsedFullLinks: parsed.fullLinks.length,
         parsedOtherLinks: parsed.otherLinks.length,
+        linksSource: parsedSource,
+        solrFallbackTried,
+        solrFallbackStatus,
         selectedTier,
         storedGoodImages: storageImages.length,
         badQuality: imageStats.badQuality,
@@ -493,7 +692,13 @@ async function processLot(
 }
 
 async function executePhotoSync(
-  options: { notifySuccess?: boolean; notifyError?: boolean; build404Report?: boolean } = {}
+  options: {
+    notifySuccess?: boolean;
+    notifyError?: boolean;
+    build404Report?: boolean;
+    candidateMode?: PhotoCandidateMode;
+    enableSolrFallback?: boolean;
+  } = {}
 ): Promise<PhotoSyncRunSummary> {
   const startedAt = Date.now();
   const counters = createCounters();
@@ -502,7 +707,9 @@ async function executePhotoSync(
 
   try {
     const candidateFetchStartedAt = Date.now();
-    const candidates = await fetchPhotoCandidates(env.photo.batchSize);
+    const candidates = await fetchPhotoCandidates(env.photo.batchSize, {
+      mode: options.candidateMode ?? "default",
+    });
     counters.lotsScanned = candidates.length;
     const candidateFetchDurationMs = Date.now() - candidateFetchStartedAt;
 
@@ -512,11 +719,15 @@ async function executePhotoSync(
       batchSize: env.photo.batchSize,
       workerTotal: env.photo.workerTotal,
       workerIndex: env.photo.workerIndex,
+      candidateMode: options.candidateMode ?? "default",
+      solrFallbackEnabledForRun: Boolean(options.enableSolrFallback),
       candidateFetchDurationMs,
     });
 
     await runWithConcurrency(candidates, env.photo.fetchConcurrency, async candidate => {
-      await processLot(candidate, counters);
+      await processLot(candidate, counters, {
+        enableSolrFallback: options.enableSolrFallback ?? false,
+      });
 
       if (
         counters.lotsProcessed > 0 &&
@@ -700,12 +911,22 @@ export async function runPhotoSync(
     notifyError?: boolean;
     build404Report?: boolean;
     skipGlobalRefreshLock?: boolean;
+    candidateMode?: PhotoCandidateMode;
+    enableSolrFallback?: boolean;
   } = {}
 ): Promise<PhotoSyncExecutionResult> {
   const lockName = getPhotoSyncLockName(env.photo.workerTotal, env.photo.workerIndex);
   const skipGateLock = process.env.PHOTO_SYNC_SKIP_GATE_LOCK === "true";
   const skipGlobalRefreshLock =
     options.skipGlobalRefreshLock || process.env.PHOTO_SYNC_SKIP_PIPELINE_LOCK === "true";
+  const envCandidateModeRaw = process.env.PHOTO_SYNC_CANDIDATE_MODE;
+  const envCandidateMode: PhotoCandidateMode =
+    envCandidateModeRaw === "missing_only" || envCandidateModeRaw === "unknown_only"
+      ? envCandidateModeRaw
+      : "default";
+  const candidateMode = options.candidateMode ?? envCandidateMode;
+  const enableSolrFallback =
+    options.enableSolrFallback ?? process.env.PHOTO_SYNC_ENABLE_SOLR_FALLBACK === "true";
   const executeLocked = async () => {
     await prepareProxyPool("photo_sync_start", true);
     const proxySnapshot = getProxyPoolSnapshot();
@@ -717,7 +938,11 @@ export async function runPhotoSync(
       preflightCompleted: proxySnapshot.preflightCompleted,
     });
 
-    return executePhotoSync(options);
+    return executePhotoSync({
+      ...options,
+      candidateMode,
+      enableSolrFallback,
+    });
   };
   const lockNames = [lockName];
   if (!skipGateLock) {

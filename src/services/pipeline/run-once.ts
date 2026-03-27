@@ -151,6 +151,8 @@ async function executeFullPipelineOnce(): Promise<void> {
         ? await runPhotoCluster({
             build404Report: env.telegram.sendSuccessSummary,
             skipGlobalRefreshLock: true,
+            candidateMode: "unknown_only",
+            enableSolrFallback: false,
           })
         : (
             await runPhotoSync({
@@ -158,6 +160,8 @@ async function executeFullPipelineOnce(): Promise<void> {
               notifyError: false,
               build404Report: env.telegram.sendSuccessSummary,
               skipGlobalRefreshLock: true,
+              candidateMode: "unknown_only",
+              enableSolrFallback: false,
             })
           ).summary;
 

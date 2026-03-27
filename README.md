@@ -84,6 +84,7 @@ docker compose run --rm app node dist/index.js db:migrate
 ```bash
 INGEST_CRON=0 0,5,10,15,20 * * *
 PHOTO_RETRY_CRON=
+PHOTO_SOLR_RETRY_CRON=
 SCHEDULER_RUN_ON_START=true
 
 RETENTION_ENABLED=true
@@ -106,6 +107,9 @@ PROXY_PREFLIGHT_MIN_WORKING=250
 PHOTO_WORKER_TOTAL=12
 PHOTO_FETCH_CONCURRENCY=150
 PHOTO_PROGRESS_EVERY_LOTS=10
+PHOTO_SOLR_FALLBACK_ENABLED=false
+PHOTO_SOLR_FALLBACK_MIN_INTERVAL_MS=1000
+PHOTO_SOLR_FALLBACK_RETRIES=1
 PHOTO_VALIDATE_BY_HEAD_FIRST=false
 PHOTO_ENDPOINT_RETRIES=1
 PHOTO_IMAGE_RETRIES=1
@@ -156,7 +160,7 @@ docker compose up -d mysql app
 - `npm run photo:sync` — парсинг `lotImages`, перевірка фото, оновлення `copart_media`.
 - `npm run proxy:check` — preflight перевірка проксі, відбір робочих і оцінка місткості.
 - `npm run pipeline:run-once` — повний цикл: ingest + photo sync.
-- `npm run scheduler:start` — планувальник (кожні 5 годин запускає повний pipeline ingest+photo; `PHOTO_RETRY_CRON` і `RETENTION_CRON` опційні).
+- `npm run scheduler:start` — планувальник (кожні 5 годин запускає повний pipeline ingest+photo; `PHOTO_RETRY_CRON`, `PHOTO_SOLR_RETRY_CRON` і `RETENTION_CRON` опційні).
 - `npm run retention:cleanup` — ручний запуск retention/housekeeping.
 - `npm run db:reset` — швидке очищення runtime-таблиць через Docker MySQL.
 - `npm run db:drop` — повний drop/recreate двох БД через Docker MySQL.
@@ -350,7 +354,12 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 Якщо мета — максимально пришвидшити `photo:sync` на великих обсягах, використовуйте такий профіль:
 
 - `PHOTO_FETCH_CONCURRENCY=30` як старт, далі піднімати поступово (`80`, `120`) з моніторингом timeout/429/403.
+- Для обережного fallback на `solr` endpoint (тільки для retry-лотів `photo_status='missing'`) використовуйте:
+  - `PHOTO_SOLR_FALLBACK_ENABLED=true`
+  - `PHOTO_SOLR_FALLBACK_MIN_INTERVAL_MS=1000..2000`
+  - `PHOTO_SOLR_FALLBACK_RETRIES=1`
 - `HTTP_MODE=proxy` або `HTTP_MODE=mixed`, заповнити `PROXY_LIST` або `PROXY_LIST_FILE` (рекомендовано файл `./proxies.txt`).
+- `PROXY_MAX_ROUTES_PER_REQUEST=1..2`, щоб один логічний запит не пробував багато маршрутів поспіль і не створював burst.
 - Ліміт запитів на 1 проксі (рекомендовано 2-5 одночасно) і health-check/blacklist нестабільних проксі.
 - `PHOTO_VALIDATE_BY_HEAD_FIRST=false` для зменшення кількості HTTP-запитів на фото.
 - Зменшити навантаження на MySQL: логувати тільки помилки (404/error), а не всі `image_head/image_get`.

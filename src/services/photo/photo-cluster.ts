@@ -225,7 +225,12 @@ function runWorker(
 }
 
 export async function runPhotoCluster(
-  options: { build404Report?: boolean; skipGlobalRefreshLock?: boolean } = {}
+  options: {
+    build404Report?: boolean;
+    skipGlobalRefreshLock?: boolean;
+    candidateMode?: "default" | "unknown_only" | "missing_only";
+    enableSolrFallback?: boolean;
+  } = {}
 ): Promise<PhotoClusterRunResult | null> {
   const lockNames = options.skipGlobalRefreshLock
     ? [LOTS_MEDIA_GATE_LOCK]
@@ -245,6 +250,8 @@ export async function runPhotoCluster(
       ...workerEnvOverrides,
       PHOTO_CLUSTER_RUN_ID: String(clusterRunId),
       PHOTO_SYNC_SKIP_PIPELINE_LOCK: "true",
+      PHOTO_SYNC_CANDIDATE_MODE: options.candidateMode ?? "default",
+      PHOTO_SYNC_ENABLE_SOLR_FALLBACK: options.enableSolrFallback ? "true" : "false",
       TELEGRAM_SEND_SUCCESS_SUMMARY: "false",
       TELEGRAM_SEND_ERROR_ALERTS: "false",
     };
@@ -256,6 +263,8 @@ export async function runPhotoCluster(
       batchSizePerWorker: env.photo.batchSize,
       sharding: "MOD(CRC32(CAST(lot_number AS CHAR)), workerTotal) = workerIndex",
       proxyAutoSelectForPhoto: env.proxy.autoSelectForPhoto,
+      candidateMode: options.candidateMode ?? "default",
+      solrFallbackEnabledForRun: Boolean(options.enableSolrFallback),
     });
 
     const startedAt = Date.now();

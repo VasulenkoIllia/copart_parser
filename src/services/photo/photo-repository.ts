@@ -131,6 +131,16 @@ export interface Photo404AttemptReportRow {
   attemptedAt: Date | null;
 }
 
+export interface PhotoEndpointIssueReportRow {
+  lotNumber: number;
+  url: string | null;
+  endpointSource: "inventoryv2" | "solr" | "unknown";
+  httpStatus: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  attemptedAt: Date | null;
+}
+
 export interface ReplaceLotImagesSummary {
   inserted: number;
   updated: number;
@@ -203,6 +213,63 @@ async function fetchPhoto404AttemptsByWindow(
   }));
 }
 
+function deriveEndpointSource(url: string | null): "inventoryv2" | "solr" | "unknown" {
+  const normalized = String(url ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized.includes("/public/data/lotdetails/solr/lotimages/")) {
+    return "solr";
+  }
+  if (normalized.includes("/v1/lotimages/")) {
+    return "inventoryv2";
+  }
+  return "unknown";
+}
+
+async function fetchPhotoEndpointIssuesByWindow(
+  startedAt: Date,
+  finishedAt: Date
+): Promise<PhotoEndpointIssueReportRow[]> {
+  const pool = getPool();
+  const [rows] = await pool.query<Photo404AttemptRow[]>(
+    `
+      SELECT
+        lot_number,
+        url,
+        attempt_type,
+        http_status,
+        error_code,
+        error_message,
+        attempted_at
+      FROM \`${env.mysql.databaseMedia}\`.\`photo_fetch_attempts\`
+      WHERE
+        attempt_type = 'lot_images_endpoint'
+        AND attempted_at >= ?
+        AND attempted_at <= ?
+        AND (
+          error_code IS NOT NULL
+          OR error_message IS NOT NULL
+          OR http_status IS NULL
+          OR http_status < 200
+          OR http_status >= 300
+        )
+      ORDER BY attempted_at ASC, id ASC
+    `,
+    [startedAt, finishedAt]
+  );
+
+  return rows.map(row => ({
+    lotNumber: Number(row.lot_number),
+    url: row.url ?? null,
+    endpointSource: deriveEndpointSource(row.url ?? null),
+    httpStatus: row.http_status === null ? null : Number(row.http_status),
+    errorCode: row.error_code ?? null,
+    errorMessage: row.error_message ?? null,
+    attemptedAt: toDate(row.attempted_at),
+  }));
+}
+
 export async function createPhotoRun(): Promise<number> {
   const pool = getPool();
   const clusterRunId = parseOptionalClusterRunId();
@@ -241,6 +308,30 @@ export async function fetchPhoto404AttemptsForRun(
   return fetchPhoto404AttemptsByWindow(startedAt, finishedAt);
 }
 
+export async function fetchPhotoEndpointIssuesForRun(
+  runId: number
+): Promise<PhotoEndpointIssueReportRow[]> {
+  const pool = getPool();
+  const [rows] = await pool.query<AttemptWindowRow[]>(
+    `
+      SELECT started_at, finished_at
+      FROM \`${env.mysql.databaseCore}\`.\`photo_runs\`
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [runId]
+  );
+
+  const window = rows[0];
+  const startedAt = toDate(window?.started_at ?? null);
+  const finishedAt = toDate(window?.finished_at ?? null);
+  if (!startedAt || !finishedAt) {
+    return [];
+  }
+
+  return fetchPhotoEndpointIssuesByWindow(startedAt, finishedAt);
+}
+
 export async function fetchPhoto404AttemptsForClusterRun(
   clusterRunId: number
 ): Promise<Photo404AttemptReportRow[]> {
@@ -263,6 +354,30 @@ export async function fetchPhoto404AttemptsForClusterRun(
   }
 
   return fetchPhoto404AttemptsByWindow(startedAt, finishedAt);
+}
+
+export async function fetchPhotoEndpointIssuesForClusterRun(
+  clusterRunId: number
+): Promise<PhotoEndpointIssueReportRow[]> {
+  const pool = getPool();
+  const [rows] = await pool.query<AttemptWindowRow[]>(
+    `
+      SELECT started_at, finished_at
+      FROM \`${env.mysql.databaseCore}\`.\`photo_cluster_runs\`
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [clusterRunId]
+  );
+
+  const window = rows[0];
+  const startedAt = toDate(window?.started_at ?? null);
+  const finishedAt = toDate(window?.finished_at ?? null);
+  if (!startedAt || !finishedAt) {
+    return [];
+  }
+
+  return fetchPhotoEndpointIssuesByWindow(startedAt, finishedAt);
 }
 
 export async function createPhotoClusterRun(selectedProxyCount: number): Promise<number> {
@@ -708,21 +823,36 @@ export async function completePhotoClusterRunFailure(
   );
 }
 
-export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandidate[]> {
-  const pool = getPool();
-  const [rows] = await pool.query<LotCandidateRow[]>(
-    `
-      SELECT
-        l.lot_number,
-        l.yard_number,
-        l.image_url,
-        l.photo_status,
-        l.photo_404_count
-      FROM \`${env.mysql.databaseCore}\`.\`lots\` l
-      WHERE
-        l.image_url IS NOT NULL
-        AND MOD(CRC32(CAST(l.lot_number AS CHAR)), ?) = ?
+export type PhotoCandidateMode = "default" | "unknown_only" | "missing_only";
+
+export async function fetchPhotoCandidates(
+  limit: number,
+  options: { mode?: PhotoCandidateMode } = {}
+): Promise<PhotoLotCandidate[]> {
+  const mode = options.mode ?? "default";
+  const statusFilterSql =
+    mode === "missing_only"
+      ? `
+        l.photo_status = 'missing'
         AND (
+          l.next_photo_retry_at IS NULL
+          OR l.next_photo_retry_at <= CURRENT_TIMESTAMP(3)
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+          WHERE li.lot_number = l.lot_number
+            AND li.check_status = 'ok'
+            AND li.is_full_size = 1
+            AND li.variant IN ('hd', 'full', 'unknown')
+        )
+      `
+      : mode === "unknown_only"
+        ? `
+          l.photo_status = 'unknown'
+        `
+      : `
+        (
           l.photo_status = 'unknown'
           OR (
             l.photo_status = 'missing'
@@ -740,6 +870,22 @@ export async function fetchPhotoCandidates(limit: number): Promise<PhotoLotCandi
             )
           )
         )
+      `;
+
+  const pool = getPool();
+  const [rows] = await pool.query<LotCandidateRow[]>(
+    `
+      SELECT
+        l.lot_number,
+        l.yard_number,
+        l.image_url,
+        l.photo_status,
+        l.photo_404_count
+      FROM \`${env.mysql.databaseCore}\`.\`lots\` l
+      WHERE
+        l.image_url IS NOT NULL
+        AND MOD(CRC32(CAST(l.lot_number AS CHAR)), ?) = ?
+        AND ${statusFilterSql}
       ORDER BY COALESCE(l.next_photo_retry_at, TIMESTAMP '1970-01-01 00:00:00') ASC, l.last_seen_at DESC
       LIMIT ?
     `,

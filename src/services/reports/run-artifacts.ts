@@ -1,8 +1,11 @@
 import { logger } from "../../lib/logger";
 import {
   fetchLotsWithoutAnyPhotos,
+  fetchPhotoEndpointIssuesForClusterRun,
+  fetchPhotoEndpointIssuesForRun,
   fetchPhoto404AttemptsForClusterRun,
   fetchPhoto404AttemptsForRun,
+  PhotoEndpointIssueReportRow,
 } from "../photo/photo-repository";
 import { writeCsvReport } from "./csv-report";
 import { GeneratedReportFile } from "./types";
@@ -168,6 +171,74 @@ export async function createPhoto404ReportForClusterRun(
   });
 }
 
+function classifyEndpointIssue(attempt: PhotoEndpointIssueReportRow): string {
+  if (attempt.httpStatus === 429) {
+    return "rate_limited";
+  }
+  if (attempt.httpStatus === 403) {
+    return "forbidden";
+  }
+  if (attempt.httpStatus === 404) {
+    return "not_found";
+  }
+  if (attempt.errorCode || attempt.errorMessage) {
+    return "request_error";
+  }
+  if (attempt.httpStatus === null) {
+    return "no_http_status";
+  }
+  if (attempt.httpStatus >= 500) {
+    return "server_error";
+  }
+  if (attempt.httpStatus >= 400) {
+    return "client_error";
+  }
+  return "non_2xx";
+}
+
+export async function createPhotoEndpointIssuesReport(
+  attempts: PhotoEndpointIssueReportRow[],
+  prefix: string
+): Promise<GeneratedReportFile | null> {
+  return writeCsvReport({
+    prefix,
+    headers: [
+      "attempted_at",
+      "lot_number",
+      "endpoint_source",
+      "issue_category",
+      "http_status",
+      "url",
+      "error_code",
+      "error_message",
+    ],
+    rows: attempts.map(attempt => ({
+      attempted_at: attempt.attemptedAt,
+      lot_number: attempt.lotNumber,
+      endpoint_source: attempt.endpointSource,
+      issue_category: classifyEndpointIssue(attempt),
+      http_status: attempt.httpStatus ?? "",
+      url: attempt.url ?? "",
+      error_code: attempt.errorCode ?? "",
+      error_message: attempt.errorMessage ?? "",
+    })),
+  });
+}
+
+export async function createPhotoEndpointIssuesReportForRun(
+  runId: number
+): Promise<GeneratedReportFile | null> {
+  const attempts = await fetchPhotoEndpointIssuesForRun(runId);
+  return createPhotoEndpointIssuesReport(attempts, `copart_endpoint_issues_run_${runId}`);
+}
+
+export async function createPhotoEndpointIssuesReportForClusterRun(
+  clusterRunId: number
+): Promise<GeneratedReportFile | null> {
+  const attempts = await fetchPhotoEndpointIssuesForClusterRun(clusterRunId);
+  return createPhotoEndpointIssuesReport(attempts, `copart_endpoint_issues_cluster_${clusterRunId}`);
+}
+
 export async function createLotsWithoutAnyPhotosReport(): Promise<GeneratedReportFile | null> {
   const lots = await fetchLotsWithoutAnyPhotos();
   return writeCsvReport({
@@ -229,6 +300,50 @@ export async function tryCreatePhoto404ReportForClusterRun(
     return await createPhoto404ReportForClusterRun(clusterRunId);
   } catch (error) {
     logger.warn("Failed to create HTTP 404 CSV report for photo cluster run", {
+      message: error instanceof Error ? error.message : String(error),
+      clusterRunId,
+    });
+    return null;
+  }
+}
+
+export async function tryCreatePhotoEndpointIssuesReport(
+  attempts: PhotoEndpointIssueReportRow[],
+  prefix: string
+): Promise<GeneratedReportFile | null> {
+  try {
+    return await createPhotoEndpointIssuesReport(attempts, prefix);
+  } catch (error) {
+    logger.warn("Failed to create endpoint issues CSV report", {
+      message: error instanceof Error ? error.message : String(error),
+      rowCount: attempts.length,
+      prefix,
+    });
+    return null;
+  }
+}
+
+export async function tryCreatePhotoEndpointIssuesReportForRun(
+  runId: number
+): Promise<GeneratedReportFile | null> {
+  try {
+    return await createPhotoEndpointIssuesReportForRun(runId);
+  } catch (error) {
+    logger.warn("Failed to create endpoint issues CSV report for photo run", {
+      message: error instanceof Error ? error.message : String(error),
+      runId,
+    });
+    return null;
+  }
+}
+
+export async function tryCreatePhotoEndpointIssuesReportForClusterRun(
+  clusterRunId: number
+): Promise<GeneratedReportFile | null> {
+  try {
+    return await createPhotoEndpointIssuesReportForClusterRun(clusterRunId);
+  } catch (error) {
+    logger.warn("Failed to create endpoint issues CSV report for photo cluster run", {
       message: error instanceof Error ? error.message : String(error),
       clusterRunId,
     });
