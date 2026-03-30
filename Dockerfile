@@ -18,6 +18,7 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY sql ./sql
 COPY docker ./docker
+COPY scripts ./scripts
 COPY README.md ./
 RUN touch /app/proxies.txt
 

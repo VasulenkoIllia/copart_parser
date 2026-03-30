@@ -19,7 +19,9 @@
     "telegram:bot": "npm run build && node dist/index.js telegram:bot",
     "test:photo-update": "node ./scripts/photo-update-test-suite.mjs",
     "test:schema-contract": "node ./scripts/schema-contract-test.mjs",
-    "test:runtime-guards": "node ./scripts/runtime-guard-test.mjs"
+    "test:runtime-guards": "node ./scripts/runtime-guard-test.mjs",
+    "proxy:probe-copart": "node ./scripts/probe-copart-proxies.mjs",
+    "proxy:probe-compare": "node ./scripts/probe-copart-proxies.mjs --compare-tls --direct-only"
   },
   "dependencies": {
     "axios": "^1.13.6",
