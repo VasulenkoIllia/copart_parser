@@ -59,6 +59,10 @@
 | 2026-03-13 | Tolerant CSV line parser | Done | `ingest` більше не валиться на неекранованих `"` всередині quoted field; битий рядок не знищує весь хвіст CSV |
 | 2026-03-14 | Photo update matrix test suite | Done | Додано `npm run test:photo-update`: реальний CSV -> генерація old/new/mix CSV -> `ingest+photo:sync` -> SQL PASS/FAIL checks |
 | 2026-03-14 | Cleanup shell wrappers | Done | Видалено `Makefile` і legacy `copart_limit_test.js`; залишено основну логіку + npm/scripts |
+| 2026-03-30 | Anti-bot audit: Incapsula vs Cloudflare | Done | Підтверджено: Copart використовує Imperva Incapsula (не Cloudflare). Datacenter IPs заблоковані на всіх endpoints (`www.copart.com`, `inventoryv2.copart.io`, `mmember.copart.com`) |
+| 2026-03-30 | `scripts/probe-copart-proxies.mjs` — додано `MMEMBER_LOT` target | Done | Новий target `POST mmember.copart.com/lots-api/v1/lot-details`; підтримка POST+body в probe; `RESIDENTIAL_PROXY` env var / `--residential-proxy` CLI arg |
+| 2026-03-30 | `scripts/test-mmember.mjs` — standalone test script | Done | Тестує mmember API для довільних лотів одночасно direct і через residential proxy; показує список фото з sequenceNumber та imageLabelCode |
+| 2026-03-30 | Виявлено Copart mobile API (`mmember.copart.com`) | Done | `POST https://mmember.copart.com/lots-api/v1/lot-details` з body `{"lotNumber":N}` — повертає `lotDetails + lotImages[]` з прямими `c-static.copart.com` URL; не потребує авторизації/токенів; тільки mobile headers |
 
 ## Що протестовано
 
@@ -100,11 +104,15 @@
 | 2026-03-13 | Full parse of live CSV with tolerant parser | Passed | Поточний live CSV: `171587 valid`, `5 invalid`; старий parser зупинявся після рядка `4108` через `125" SLEEPER CAB` |
 | 2026-03-14 | `PHOTO_TEST_CASE_TOTALS=2 PHOTO_TEST_OLD_POOL_SIZE=20 PHOTO_TEST_DB_PREPARE=reset npm run test:photo-update` | Passed | Реальний CSV + 3 кейси (`0/2`, `1/1`, `2/0`), `3/3 PASS`, SQL-перевірки підтвердили skip old lots і process new lots |
 | 2026-03-14 | `PHOTO_TEST_DB_PREPARE=reset npm run test:photo-update` | Passed | Повна матриця `10/15` (27 кейсів): `27/27 PASS`, seed `100` лотів, old-lots стабільно `oldDueBefore=0` / `oldTouched=0` |
+| 2026-03-30 | `mmember.copart.com` POST API — тест direct + residential (Mac та сервер) | Passed | Direct Mac IP → PASS; Direct server IP (datacenter) → HTTP 403 заблоковано Incapsula; Residential proxy `rp.scrapegw.com:6060` → PASS з сервера |
+| 2026-03-30 | `inventoryv2.copart.io` — тест лотів зі старими фото | Observed | Лот `74590025` (path `0226/...`): `inventoryv2` повертає `imgCount=12, lotImages=[]` (порожній); `mmember` через residential proxy → `lotImages=12` (всі фото є) |
+| 2026-03-30 | Probe script — тест 1000 datacenter проксі на всіх endpoints | Observed | `PASS=0, BOT=1000` для всіх Copart endpoints через datacenter проксі; `mmember.copart.com` також блокує datacenter IP |
 
 ## В роботі
 
 | Задача | Пріоритет | Власник | Статус |
 |---|---|---|---|
+| Fallback photo sync для ~1000 лотів де `inventoryv2` повертає порожній `lotImages[]` | High | TBD | In Progress — API знайдено, потрібна реалізація в `photo-sync.ts` |
 | Фінальна БД без `missing` лотів | High | TBD | Planned |
 | CSV quality gate (`max_invalid_%`) | High | TBD | Planned |
 | Кеш перевірок фото по URL hash | High | TBD | Planned |
@@ -153,3 +161,5 @@
 | 2026-03-10 | Конфігурація тільки через ENV | Спрощує деплой, тестування та перемикання режимів (proxy/direct) |
 | 2026-03-10 | Окремий doc-файл для статусу | Прозоре ведення готовності та тестів |
 | 2026-03-10 | CSV зберігається як нормалізовані поля лота + `row_hash` | Дає швидке визначення змін і менший обсяг core-таблиці |
+| 2026-03-30 | Fallback — `mmember.copart.com` замість `www.copart.com` scraping | `www.copart.com` потребує TLS fingerprint і residential proxy для кожного запиту; `mmember.copart.com` — офіційний iOS app API, не потребує токенів, достатньо residential proxy |
+| 2026-03-30 | Residential proxy окремо від datacenter пулу | Residential proxy (`rp.scrapegw.com:6060`) використовується тільки як fallback для лотів де `inventoryv2` порожній — щоб не витрачати residential bandwidth на основний пул |
