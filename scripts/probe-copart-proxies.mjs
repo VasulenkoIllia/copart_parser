@@ -130,7 +130,11 @@ const TARGETS = [
         body.toLowerCase().includes("cf-challenge") ||
         body.toLowerCase().includes("enable javascript") ||
         body.toLowerCase().includes("checking your browser") ||
-        body.toLowerCase().includes("attention required")),
+        body.toLowerCase().includes("attention required") ||
+        body.includes("_Incapsula_Resource") ||
+        body.includes("incapsula") ||
+        body.toLowerCase().includes("visid_incap") ||
+        body.toLowerCase().includes("incap_ses")),
   },
   {
     id: "LOT_IMAGES",
@@ -162,7 +166,11 @@ const TARGETS = [
         body.toLowerCase().includes("cf-challenge") ||
         body.toLowerCase().includes("enable javascript") ||
         body.toLowerCase().includes("access denied") ||
-        body.toLowerCase().includes("attention required")),
+        body.toLowerCase().includes("attention required") ||
+        body.includes("_Incapsula_Resource") ||
+        body.includes("incapsula") ||
+        body.toLowerCase().includes("visid_incap") ||
+        body.toLowerCase().includes("incap_ses")),
   },
 ];
 
