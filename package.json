@@ -21,7 +21,9 @@
     "test:schema-contract": "node ./scripts/schema-contract-test.mjs",
     "test:runtime-guards": "node ./scripts/runtime-guard-test.mjs",
     "proxy:probe-copart": "node ./scripts/probe-copart-proxies.mjs",
-    "proxy:probe-compare": "node ./scripts/probe-copart-proxies.mjs --compare-tls --direct-only"
+    "proxy:probe-compare": "node ./scripts/probe-copart-proxies.mjs --compare-tls --direct-only",
+    "proxy:probe-mmember": "node ./scripts/probe-copart-proxies.mjs --direct-only",
+    "proxy:probe-mmember-proxies": "node ./scripts/probe-copart-proxies.mjs --proxy-only"
   },
   "dependencies": {
     "axios": "^1.13.6",

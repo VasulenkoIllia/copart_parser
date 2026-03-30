@@ -165,6 +165,7 @@ const TARGETS = [
     // Потрібна тільки якщо плануєте скрапити HTML сторінки
     id: "WWW_LOT_PAGE",
     url: "https://www.copart.com/lot/90813725/salvage-2024-tesla-model-3-in-indianapolis",
+    method: "GET",
     headers: {
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9",
@@ -179,6 +180,37 @@ const TARGETS = [
     successCheck: (body) =>
       typeof body === "string" &&
       (body.toLowerCase().includes("tesla") || body.toLowerCase().includes("90813725")),
+    botCheck: BOT_CHECK,
+  },
+  {
+    // mmember.copart.com — Copart mobile app API (iOS)
+    // Повертає lotDetails + lotImages[] в одному запиті, без авторизації.
+    // Потенційний fallback для лотів де inventoryv2 повертає порожній lotImages[].
+    id: "MMEMBER_LOT",
+    url: "https://mmember.copart.com/lots-api/v1/lot-details",
+    method: "POST",
+    body: JSON.stringify({ lotNumber: 42066666 }),
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/plain, */*",
+      devicename: "iPhone 16 Pro",
+      sitecode: "CPRTUS",
+      company: "COPART",
+      os: "ios",
+      languagecode: "en-US",
+      clientappversion: "6.7.2",
+      deviceid: "5FE63153-B6D9-458F-90FA-287A625BF6D4",
+      "ins-sess": "F81006D1-92C3-4F58-A623-4F52711D5C13",
+      "User-Agent": "MemberMobile/5 CFNetwork/3860.300.31 Darwin/25.2.0",
+    },
+    successCheck: (body) => {
+      try {
+        const json = typeof body === "string" ? JSON.parse(body) : body;
+        return json && Array.isArray(json.lotImages) && json.lotImages.length > 0;
+      } catch {
+        return false;
+      }
+    },
     botCheck: BOT_CHECK,
   },
 ];
@@ -298,19 +330,21 @@ function getTransport(proxy, tlsAgentOptions) {
 async function probeTarget(target, proxy, tlsAgentOptions) {
   const started = Date.now();
   const transport = getTransport(proxy, tlsAgentOptions);
+  const method = target.method || "GET";
 
   try {
     const response = await axios.default.request({
-      method: "GET",
+      method,
       url: target.url,
       timeout: TIMEOUT_MS,
       maxRedirects: 5,
       responseType: "text",
       decompress: true,
       validateStatus: () => true,
+      ...(target.body !== undefined ? { data: target.body } : {}),
       ...transport,
       headers: {
-        "User-Agent": USER_AGENT,
+        ...(method !== "GET" ? {} : { "User-Agent": USER_AGENT }),
         ...target.headers,
       },
     });
