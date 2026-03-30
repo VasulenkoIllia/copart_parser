@@ -134,8 +134,8 @@ async function fetchEndpointIssuesForSummary(
 
 function buildPhotoRetrySuccessMessage(
   summary: PhotoSyncRunSummary | PhotoClusterRunResult,
-  stageLabel: "inventory_retry",
-  endpointStage: "inventoryv2_only",
+  stageLabel: string,
+  endpointStage: string,
   lotsWithoutAnyPhotosStats: LotsWithoutAnyPhotosStats,
   lotsWithoutAnyPhotosCsv: string,
   endpointIssueStats: EndpointIssueStats,
@@ -153,6 +153,24 @@ function buildPhotoRetrySuccessMessage(
   const imagesStoredFull = summary.mode === "cluster" ? summary.totalImagesStoredFull : summary.imagesStoredFull;
   const endpoint404Lots = summary.mode === "cluster" ? summary.totalEndpoint404Lots : summary.endpoint404Lots;
 
+  const mmemberAttempted =
+    summary.mode === "sync"
+      ? summary.mmemberFallbackAttempted
+      : summary.totalMmemberFallbackAttempted;
+  const mmemberOk =
+    summary.mode === "sync" ? summary.mmemberFallbackOk : summary.totalMmemberFallbackOk;
+
+  const mmemberLines =
+    mmemberAttempted > 0
+      ? [
+          "",
+          "— Residential (mmember) fallback —",
+          `mmember_fallback_attempted=${formatCount(mmemberAttempted)}`,
+          `mmember_fallback_ok=${formatCount(mmemberOk)}`,
+          `mmember_fallback_failed=${formatCount(mmemberAttempted - mmemberOk)}`,
+        ]
+      : [];
+
   return [
     title,
     `retry_stage=${stageLabel}`,
@@ -167,12 +185,17 @@ function buildPhotoRetrySuccessMessage(
     `images_stored_hd=${formatCount(imagesStoredHd)}`,
     `images_stored_full=${formatCount(imagesStoredFull)}`,
     `endpoint_404_lots=${formatCount(endpoint404Lots)}`,
+    ...mmemberLines,
+    "",
+    "— Endpoint issues —",
     `endpoint_issues_total=${formatCount(endpointIssueStats.total)}`,
     `endpoint_429_rate_limited=${formatCount(endpointIssueStats.rateLimited429)}`,
     `endpoint_403_forbidden=${formatCount(endpointIssueStats.forbidden403)}`,
     `endpoint_404_not_found=${formatCount(endpointIssueStats.notFound404)}`,
     `endpoint_issues_inventory=${formatCount(endpointIssueStats.inventoryIssues)}`,
     `endpoint_issues_csv=${endpointIssuesCsv}`,
+    "",
+    "— Лоти без фото —",
     `lots_without_any_photos_total=${formatCount(lotsWithoutAnyPhotosStats.total)}`,
     `lots_without_any_photos_missing_due_now=${formatCount(lotsWithoutAnyPhotosStats.missingDueNow)}`,
     `lots_without_any_photos_missing_due_future=${formatCount(lotsWithoutAnyPhotosStats.missingDueFuture)}`,
@@ -276,7 +299,7 @@ export async function startScheduler(): Promise<void> {
                 buildPhotoRetrySuccessMessage(
                   summary,
                   "inventory_retry",
-                  "inventoryv2_only",
+                  env.mmemberFallback.enabled ? "inventoryv2+mmember_residential" : "inventoryv2_only",
                   lotsWithoutAnyPhotosStats,
                   lotsWithoutAnyPhotosReport?.filename ?? "none",
                   endpointIssueStats,

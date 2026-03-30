@@ -1,4 +1,5 @@
 import { logger } from "../../lib/logger";
+import env from "../../config/env";
 import {
   fetchLotsWithoutAnyPhotos,
   fetchPhotoEndpointIssuesForClusterRun,
@@ -254,6 +255,9 @@ export async function createLotsWithoutAnyPhotosReport(
     return lot.nextPhotoRetryAt.getTime() <= nowMs ? "due_now" : "due_future";
   };
 
+  const mmemberEnabled = env.mmemberFallback.enabled;
+  const mmemberMinAttempts = env.mmemberFallback.minAttempts;
+
   return writeCsvReport({
     prefix,
     headers: [
@@ -264,6 +268,7 @@ export async function createLotsWithoutAnyPhotosReport(
       "next_photo_retry_at",
       "last_seen_at",
       "retry_state",
+      "mmember_candidate",
     ],
     rows: lots.map(lot => ({
       lot_number: lot.lotNumber,
@@ -273,6 +278,12 @@ export async function createLotsWithoutAnyPhotosReport(
       next_photo_retry_at: lot.nextPhotoRetryAt,
       last_seen_at: lot.lastSeenAt,
       retry_state: deriveRetryState(lot),
+      mmember_candidate:
+        mmemberEnabled &&
+        lot.photoStatus === "missing" &&
+        lot.photo404Count >= mmemberMinAttempts
+          ? "yes"
+          : "no",
     })),
   });
 }

@@ -6,6 +6,7 @@ import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from ".
 import { withAppLock, withAppLocks } from "../locks/db-lock";
 import { getPhotoSyncLockName, LOTS_MEDIA_GATE_LOCK, PIPELINE_REFRESH_LOCK } from "../locks/lock-names";
 import { inspectLotImage } from "./image-inspector";
+import { fetchMmemberLotImages, logMmemberStats } from "./mmember-client";
 import {
   calculateBackoffMinutes,
   clearLotImages,
@@ -72,6 +73,8 @@ function createCounters(): PhotoRunCounters {
     imagesBadQuality: 0,
     http404Count: 0,
     endpoint404Lots: 0,
+    mmemberFallbackAttempted: 0,
+    mmemberFallbackOk: 0,
   };
 }
 
@@ -224,6 +227,40 @@ async function runWithConcurrency<T>(
   await Promise.all(runners);
 }
 
+interface Semaphore {
+  acquire: () => Promise<void>;
+  release: () => void;
+}
+
+function createSemaphore(limit: number): Semaphore {
+  let count = 0;
+  const queue: Array<() => void> = [];
+  return {
+    acquire(): Promise<void> {
+      return new Promise<void>(resolve => {
+        if (count < limit) {
+          count++;
+          resolve();
+        } else {
+          queue.push(() => {
+            count++;
+            resolve();
+          });
+        }
+      });
+    },
+    release(): void {
+      count--;
+      const next = queue.shift();
+      if (next) {
+        next();
+      }
+    },
+  };
+}
+
+const mmemberSemaphore: Semaphore = createSemaphore(env.mmemberFallback.concurrency);
+
 async function inspectParsedLinks(links: ParsedLotImageLink[]): Promise<CheckedLotImage[]> {
   if (links.length === 0) {
     return [];
@@ -275,6 +312,8 @@ function toSummary(
     imagesBadQuality: counters.imagesBadQuality,
     http404Count: counters.http404Count,
     endpoint404Lots: counters.endpoint404Lots,
+    mmemberFallbackAttempted: counters.mmemberFallbackAttempted,
+    mmemberFallbackOk: counters.mmemberFallbackOk,
     durationMs,
     http404Report,
   };
@@ -346,7 +385,41 @@ async function processLot(
       endpointStatus !== null && endpointStatus >= 200 && endpointStatus < 300
         ? parseEndpointPayload(candidate.lotNumber, inventoryPayload)
         : { fullLinks: [], hdLinks: [], otherLinks: [], imgCount: 0 };
-    const parsedSource: "inventoryv2" = "inventoryv2";
+    let parsedSource: "inventoryv2" | "mmember" = "inventoryv2";
+
+    // Detect inventoryv2 EMPTY bug: 2xx response with imgCount > 0 but no images in lotImages[]
+    // This affects ~1000 older lots (path 0226/ and earlier). Fallback to mmember mobile API.
+    const isInventoryv2Empty =
+      endpointStatus !== null &&
+      endpointStatus >= 200 &&
+      endpointStatus < 300 &&
+      parsed.imgCount > 0 &&
+      countParsedLinks(parsed) === 0;
+
+    if (
+      isInventoryv2Empty &&
+      env.mmemberFallback.enabled &&
+      candidate.photo404Count >= env.mmemberFallback.minAttempts
+    ) {
+      await mmemberSemaphore.acquire();
+      try {
+        const mmemberResult = await fetchMmemberLotImages(candidate.lotNumber);
+        if (countParsedLinks(mmemberResult) > 0) {
+          parsed = mmemberResult;
+          parsedSource = "mmember";
+          counters.mmemberFallbackOk += 1;
+        }
+        counters.mmemberFallbackAttempted += 1;
+      } catch (err) {
+        counters.mmemberFallbackAttempted += 1;
+        logger.warn("mmember fallback error", {
+          lotNumber: candidate.lotNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        mmemberSemaphore.release();
+      }
+    }
 
     const supportedLinksCount = countParsedLinks(parsed);
     if (supportedLinksCount === 0 || parsed.imgCount === 0) {
@@ -367,7 +440,9 @@ async function processLot(
             ? "endpoint_non_2xx"
             : endpointErrorMessage
               ? "endpoint_exception"
-              : "empty_payload";
+              : isInventoryv2Empty
+                ? "empty_payload_mmember_failed"
+                : "empty_payload";
 
       logResult({
         lotNumber: candidate.lotNumber,
@@ -568,6 +643,7 @@ async function executePhotoSync(
     });
 
     await completePhotoRunSuccess(runId, counters);
+    logMmemberStats(counters.mmemberFallbackAttempted, counters.mmemberFallbackOk);
 
     const shouldBuild404Report =
       options.build404Report ?? ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary);

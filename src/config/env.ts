@@ -102,6 +102,13 @@ interface AppEnv {
     preflightMinWorking: number;
     preflightStrict: boolean;
   };
+  mmemberFallback: {
+    enabled: boolean;
+    proxyUrl: string;
+    minAttempts: number;
+    timeoutMs: number;
+    concurrency: number;
+  };
   diagnostics: {
     httpLogSlowRequestMs: number;
     httpLogRetryAttempts: boolean;
@@ -341,6 +348,13 @@ const env: AppEnv = {
     preflightMinWorking: toInt("PROXY_PREFLIGHT_MIN_WORKING", 5),
     preflightStrict: toBoolean("PROXY_PREFLIGHT_STRICT", false),
   },
+  mmemberFallback: {
+    enabled: toBoolean("MMEMBER_FALLBACK_ENABLED", false),
+    proxyUrl: optional("MMEMBER_FALLBACK_PROXY_URL", ""),
+    minAttempts: toInt("MMEMBER_FALLBACK_MIN_ATTEMPTS", 2),
+    timeoutMs: toInt("MMEMBER_FALLBACK_TIMEOUT_MS", 25_000),
+    concurrency: toInt("MMEMBER_FALLBACK_CONCURRENCY", 3),
+  },
   diagnostics: {
     httpLogSlowRequestMs: toInt("HTTP_LOG_SLOW_REQUEST_MS", 3_000),
     httpLogRetryAttempts: toBoolean("HTTP_LOG_RETRY_ATTEMPTS", true),
@@ -474,6 +488,18 @@ if (env.proxy.preflightMinWorking < 1) {
 
 if (env.diagnostics.httpLogSlowRequestMs < 1) {
   throw new Error("HTTP_LOG_SLOW_REQUEST_MS must be >= 1");
+}
+
+if (env.mmemberFallback.minAttempts < 1) {
+  throw new Error("MMEMBER_FALLBACK_MIN_ATTEMPTS must be >= 1");
+}
+
+if (env.mmemberFallback.timeoutMs < 1000) {
+  throw new Error("MMEMBER_FALLBACK_TIMEOUT_MS must be >= 1000");
+}
+
+if (env.mmemberFallback.concurrency < 1) {
+  throw new Error("MMEMBER_FALLBACK_CONCURRENCY must be >= 1");
 }
 
 export default env;

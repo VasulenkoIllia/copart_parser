@@ -79,6 +79,8 @@ interface ClusterSummaryRow extends RowDataPacket {
   total_images_bad_quality: number | null;
   total_http_404_count: number | null;
   total_endpoint_404_lots: number | null;
+  total_mmember_fallback_attempted: number | null;
+  total_mmember_fallback_ok: number | null;
 }
 
 interface ClusterWorkerRow extends RowDataPacket {
@@ -436,7 +438,9 @@ export async function completePhotoRunSuccess(
           'imagesInserted', ?,
           'imagesUpdated', ?,
           'imagesStoredHd', ?,
-          'imagesStoredFull', ?
+          'imagesStoredFull', ?,
+          'mmemberFallbackAttempted', ?,
+          'mmemberFallbackOk', ?
         )
       WHERE id = ?
     `,
@@ -460,6 +464,8 @@ export async function completePhotoRunSuccess(
       counters.imagesUpdated,
       counters.imagesStoredHd,
       counters.imagesStoredFull,
+      counters.mmemberFallbackAttempted,
+      counters.mmemberFallbackOk,
       runId,
     ]
   );
@@ -498,7 +504,9 @@ export async function completePhotoRunFailure(
           'imagesInserted', ?,
           'imagesUpdated', ?,
           'imagesStoredHd', ?,
-          'imagesStoredFull', ?
+          'imagesStoredFull', ?,
+          'mmemberFallbackAttempted', ?,
+          'mmemberFallbackOk', ?
         )
       WHERE id = ?
     `,
@@ -523,6 +531,8 @@ export async function completePhotoRunFailure(
       counters.imagesUpdated,
       counters.imagesStoredHd,
       counters.imagesStoredFull,
+      counters.mmemberFallbackAttempted,
+      counters.mmemberFallbackOk,
       runId,
     ]
   );
@@ -593,7 +603,23 @@ export async function fetchPhotoClusterRunSummary(
             )
           ),
           0
-        ) AS total_endpoint_404_lots
+        ) AS total_endpoint_404_lots,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.mmemberFallbackAttempted')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_mmember_fallback_attempted,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.mmemberFallbackOk')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_mmember_fallback_ok
       FROM \`${env.mysql.databaseCore}\`.\`photo_runs\`
       WHERE cluster_run_id = ?
     `,
@@ -619,6 +645,8 @@ export async function fetchPhotoClusterRunSummary(
     totalImagesBadQuality: Number(row?.total_images_bad_quality ?? 0),
     totalHttp404Count: Number(row?.total_http_404_count ?? 0),
     totalEndpoint404Lots: Number(row?.total_endpoint_404_lots ?? 0),
+    totalMmemberFallbackAttempted: Number(row?.total_mmember_fallback_attempted ?? 0),
+    totalMmemberFallbackOk: Number(row?.total_mmember_fallback_ok ?? 0),
   };
 }
 

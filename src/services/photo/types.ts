@@ -47,6 +47,8 @@ export interface PhotoRunCounters {
   imagesBadQuality: number;
   http404Count: number;
   endpoint404Lots: number;
+  mmemberFallbackAttempted: number;
+  mmemberFallbackOk: number;
 }
 
 export interface PhotoSyncRunSummary {
@@ -68,6 +70,8 @@ export interface PhotoSyncRunSummary {
   imagesBadQuality: number;
   http404Count: number;
   endpoint404Lots: number;
+  mmemberFallbackAttempted: number;
+  mmemberFallbackOk: number;
   durationMs: number;
   http404Report: GeneratedReportFile | null;
 }
@@ -120,6 +124,8 @@ export interface PhotoClusterRunSummary {
   totalImagesBadQuality: number;
   totalHttp404Count: number;
   totalEndpoint404Lots: number;
+  totalMmemberFallbackAttempted: number;
+  totalMmemberFallbackOk: number;
 }
 
 export interface PhotoClusterRunResult extends PhotoClusterRunSummary {
