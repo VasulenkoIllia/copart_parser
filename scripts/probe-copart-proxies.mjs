@@ -103,18 +103,73 @@ const TLS_MODES = {
 
 // ─── Targets ─────────────────────────────────────────────────────────────────
 
+const BOT_CHECK = (body) =>
+  typeof body === "string" &&
+  (body.toLowerCase().includes("just a moment") ||
+    body.toLowerCase().includes("cf-challenge") ||
+    body.toLowerCase().includes("enable javascript") ||
+    body.toLowerCase().includes("checking your browser") ||
+    body.toLowerCase().includes("attention required") ||
+    body.toLowerCase().includes("access denied") ||
+    body.includes("_Incapsula_Resource") ||
+    body.toLowerCase().includes("incapsula") ||
+    body.toLowerCase().includes("visid_incap") ||
+    body.toLowerCase().includes("incap_ses"));
+
 const TARGETS = [
   {
-    id: "LOT_PAGE",
+    // Реальний endpoint що використовує photo-sync (inventoryv2.copart.io)
+    // В proxy-режимі код використовує HTTP, тому тестуємо обидва
+    id: "INVENTORY_HTTP",
+    url: "http://inventoryv2.copart.io/public/data/lotdetails/solr/lotImages/90813725/USA?country=us&brand=cprt&yardNumber=1",
+    headers: {
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+      Referer: "https://www.copart.com/",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+    },
+    successCheck: (body) => {
+      try {
+        const json = typeof body === "string" ? JSON.parse(body) : body;
+        return json && (json.data !== undefined || json.lotImages !== undefined || json.imgCount !== undefined);
+      } catch {
+        return false;
+      }
+    },
+    botCheck: BOT_CHECK,
+  },
+  {
+    // HTTPS варіант того ж endpoint (для direct-режиму)
+    id: "INVENTORY_HTTPS",
+    url: "https://inventoryv2.copart.io/public/data/lotdetails/solr/lotImages/90813725/USA?country=us&brand=cprt&yardNumber=1",
+    headers: {
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "en-US,en;q=0.9",
+      Referer: "https://www.copart.com/",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+    },
+    successCheck: (body) => {
+      try {
+        const json = typeof body === "string" ? JSON.parse(body) : body;
+        return json && (json.data !== undefined || json.lotImages !== undefined || json.imgCount !== undefined);
+      } catch {
+        return false;
+      }
+    },
+    botCheck: BOT_CHECK,
+  },
+  {
+    // www.copart.com — публічна сторінка лота (Incapsula-захист)
+    // Потрібна тільки якщо плануєте скрапити HTML сторінки
+    id: "WWW_LOT_PAGE",
     url: "https://www.copart.com/lot/90813725/salvage-2024-tesla-model-3-in-indianapolis",
     headers: {
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9",
       "Accept-Encoding": "gzip, deflate, br",
       "Cache-Control": "max-age=0",
-      "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-      "Sec-Ch-Ua-Mobile": "?0",
-      "Sec-Ch-Ua-Platform": '"Windows"',
       "Sec-Fetch-Dest": "document",
       "Sec-Fetch-Mode": "navigate",
       "Sec-Fetch-Site": "none",
@@ -124,53 +179,7 @@ const TARGETS = [
     successCheck: (body) =>
       typeof body === "string" &&
       (body.toLowerCase().includes("tesla") || body.toLowerCase().includes("90813725")),
-    botCheck: (body) =>
-      typeof body === "string" &&
-      (body.toLowerCase().includes("just a moment") ||
-        body.toLowerCase().includes("cf-challenge") ||
-        body.toLowerCase().includes("enable javascript") ||
-        body.toLowerCase().includes("checking your browser") ||
-        body.toLowerCase().includes("attention required") ||
-        body.includes("_Incapsula_Resource") ||
-        body.includes("incapsula") ||
-        body.toLowerCase().includes("visid_incap") ||
-        body.toLowerCase().includes("incap_ses")),
-  },
-  {
-    id: "LOT_IMAGES",
-    url: "https://www.copart.com/public/data/lotdetails/solr/lotImages/90813725/USA",
-    headers: {
-      Accept: "application/json, text/plain, */*",
-      "Accept-Language": "en-US,en;q=0.9",
-      "Accept-Encoding": "gzip, deflate, br",
-      Referer: "https://www.copart.com/lot/90813725/salvage-2024-tesla-model-3-in-indianapolis",
-      "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-      "Sec-Ch-Ua-Mobile": "?0",
-      "Sec-Ch-Ua-Platform": '"Windows"',
-      "Sec-Fetch-Dest": "empty",
-      "Sec-Fetch-Mode": "cors",
-      "Sec-Fetch-Site": "same-origin",
-      "X-Requested-With": "XMLHttpRequest",
-    },
-    successCheck: (body) => {
-      try {
-        const json = typeof body === "string" ? JSON.parse(body) : body;
-        return json && (json.data !== undefined || json.lotImages !== undefined);
-      } catch {
-        return false;
-      }
-    },
-    botCheck: (body) =>
-      typeof body === "string" &&
-      (body.toLowerCase().includes("just a moment") ||
-        body.toLowerCase().includes("cf-challenge") ||
-        body.toLowerCase().includes("enable javascript") ||
-        body.toLowerCase().includes("access denied") ||
-        body.toLowerCase().includes("attention required") ||
-        body.includes("_Incapsula_Resource") ||
-        body.includes("incapsula") ||
-        body.toLowerCase().includes("visid_incap") ||
-        body.toLowerCase().includes("incap_ses")),
+    botCheck: BOT_CHECK,
   },
 ];
 
