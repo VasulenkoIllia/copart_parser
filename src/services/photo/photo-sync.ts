@@ -676,6 +676,17 @@ async function executePhotoSync(
     const summary = toSummary(runId, counters, durationMs, http404Report);
 
     if ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary) {
+      const mmemberSyncLines =
+        counters.mmemberFallbackAttempted > 0
+          ? [
+              "",
+              "— Residential (mmember) fallback —",
+              `mmember_fallback_attempted=${counters.mmemberFallbackAttempted}`,
+              `mmember_fallback_ok=${counters.mmemberFallbackOk}`,
+              `mmember_fallback_failed=${counters.mmemberFallbackAttempted - counters.mmemberFallbackOk}`,
+            ]
+          : [];
+
       await sendTelegramMessage(
         [
           "[PHOTO SYNC] success",
@@ -694,6 +705,7 @@ async function executePhotoSync(
           `images_bad_quality=${counters.imagesBadQuality}`,
           `http_404_count=${counters.http404Count}`,
           `endpoint_404_lots=${counters.endpoint404Lots}`,
+          ...mmemberSyncLines,
           `http_404_csv=${http404Report ? http404Report.filename : "none"}`,
         ].join("\n")
       );
