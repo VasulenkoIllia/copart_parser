@@ -134,7 +134,7 @@ export interface Photo404AttemptReportRow {
 export interface PhotoEndpointIssueReportRow {
   lotNumber: number;
   url: string | null;
-  endpointSource: "inventoryv2" | "solr" | "unknown";
+  endpointSource: "inventoryv2" | "unknown";
   httpStatus: number | null;
   errorCode: string | null;
   errorMessage: string | null;
@@ -213,13 +213,10 @@ async function fetchPhoto404AttemptsByWindow(
   }));
 }
 
-function deriveEndpointSource(url: string | null): "inventoryv2" | "solr" | "unknown" {
+function deriveEndpointSource(url: string | null): "inventoryv2" | "unknown" {
   const normalized = String(url ?? "").trim().toLowerCase();
   if (!normalized) {
     return "unknown";
-  }
-  if (normalized.includes("/public/data/lotdetails/solr/lotimages/")) {
-    return "solr";
   }
   if (normalized.includes("/v1/lotimages/")) {
     return "inventoryv2";

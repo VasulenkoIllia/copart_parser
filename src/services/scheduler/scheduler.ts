@@ -92,7 +92,6 @@ interface EndpointIssueStats {
   forbidden403: number;
   notFound404: number;
   inventoryIssues: number;
-  solrIssues: number;
 }
 
 function summarizeEndpointIssues(attempts: PhotoEndpointIssueReportRow[]): EndpointIssueStats {
@@ -100,7 +99,6 @@ function summarizeEndpointIssues(attempts: PhotoEndpointIssueReportRow[]): Endpo
   let forbidden403 = 0;
   let notFound404 = 0;
   let inventoryIssues = 0;
-  let solrIssues = 0;
 
   for (const attempt of attempts) {
     if (attempt.httpStatus === 429) {
@@ -114,8 +112,6 @@ function summarizeEndpointIssues(attempts: PhotoEndpointIssueReportRow[]): Endpo
     }
     if (attempt.endpointSource === "inventoryv2") {
       inventoryIssues += 1;
-    } else if (attempt.endpointSource === "solr") {
-      solrIssues += 1;
     }
   }
 
@@ -125,7 +121,6 @@ function summarizeEndpointIssues(attempts: PhotoEndpointIssueReportRow[]): Endpo
     forbidden403,
     notFound404,
     inventoryIssues,
-    solrIssues,
   };
 }
 
@@ -139,8 +134,8 @@ async function fetchEndpointIssuesForSummary(
 
 function buildPhotoRetrySuccessMessage(
   summary: PhotoSyncRunSummary | PhotoClusterRunResult,
-  stageLabel: "inventory_retry" | "solr_retry",
-  endpointStage: "inventoryv2_only" | "inventoryv2_then_solr_fallback",
+  stageLabel: "inventory_retry",
+  endpointStage: "inventoryv2_only",
   lotsWithoutAnyPhotosStats: LotsWithoutAnyPhotosStats,
   lotsWithoutAnyPhotosCsv: string,
   endpointIssueStats: EndpointIssueStats,
@@ -177,7 +172,6 @@ function buildPhotoRetrySuccessMessage(
     `endpoint_403_forbidden=${formatCount(endpointIssueStats.forbidden403)}`,
     `endpoint_404_not_found=${formatCount(endpointIssueStats.notFound404)}`,
     `endpoint_issues_inventory=${formatCount(endpointIssueStats.inventoryIssues)}`,
-    `endpoint_issues_solr=${formatCount(endpointIssueStats.solrIssues)}`,
     `endpoint_issues_csv=${endpointIssuesCsv}`,
     `lots_without_any_photos_total=${formatCount(lotsWithoutAnyPhotosStats.total)}`,
     `lots_without_any_photos_missing_due_now=${formatCount(lotsWithoutAnyPhotosStats.missingDueNow)}`,
@@ -213,13 +207,11 @@ async function safeRun(
 
 export async function startScheduler(): Promise<void> {
   const photoRetryCron = env.schedule.photoRetryCron.trim();
-  const photoSolrRetryCron = env.schedule.photoSolrRetryCron.trim();
   const retentionCron = env.maintenance.cron.trim();
 
   logger.info("Scheduler started", {
     ingestCron: env.schedule.ingestCron,
     photoRetryCron: photoRetryCron || "disabled",
-    photoSolrRetryCron: photoSolrRetryCron || "disabled",
     retentionEnabled: env.maintenance.enabled,
     retentionCron: retentionCron || "disabled",
     timezone: env.app.tz,
@@ -253,14 +245,12 @@ export async function startScheduler(): Promise<void> {
               env.photo.workerTotal > 1
                 ? await runPhotoCluster({
                     candidateMode: "missing_only",
-                    enableSolrFallback: false,
                   })
                 : (
                     await runPhotoSync({
                       notifySuccess: false,
                       notifyError: false,
                       candidateMode: "missing_only",
-                      enableSolrFallback: false,
                     })
                   ).summary ?? null;
             if (!summary || !env.telegram.sendSuccessSummary) {
@@ -319,83 +309,6 @@ export async function startScheduler(): Promise<void> {
     );
   }
 
-  if (photoSolrRetryCron) {
-    cron.schedule(
-      photoSolrRetryCron,
-      () => {
-        void safeRun(
-          "PHOTO_SOLR_RETRY",
-          async () => {
-            const summary =
-              env.photo.workerTotal > 1
-                ? await runPhotoCluster({
-                    candidateMode: "missing_only",
-                    enableSolrFallback: true,
-                  })
-                : (
-                    await runPhotoSync({
-                      notifySuccess: false,
-                      notifyError: false,
-                      candidateMode: "missing_only",
-                      enableSolrFallback: true,
-                    })
-                  ).summary ?? null;
-            if (!summary || !env.telegram.sendSuccessSummary) {
-              return;
-            }
-
-            let lotsWithoutAnyPhotosReport: GeneratedReportFile | null = null;
-            let endpointIssuesReport: GeneratedReportFile | null = null;
-            try {
-              const lotsWithoutAnyPhotosStats = await fetchLotsWithoutAnyPhotosStats();
-              const endpointIssues = await fetchEndpointIssuesForSummary(summary);
-              const endpointIssueStats = summarizeEndpointIssues(endpointIssues);
-              lotsWithoutAnyPhotosReport = await tryCreateLotsWithoutAnyPhotosReport(
-                "copart_lots_without_any_photos_solr_retry"
-              );
-              endpointIssuesReport = await tryCreatePhotoEndpointIssuesReport(
-                endpointIssues,
-                summary.mode === "cluster"
-                  ? `copart_endpoint_issues_cluster_${summary.clusterRunId}`
-                  : `copart_endpoint_issues_run_${summary.runId}`
-              );
-              await sendTelegramMessage(
-                buildPhotoRetrySuccessMessage(
-                  summary,
-                  "solr_retry",
-                  "inventoryv2_then_solr_fallback",
-                  lotsWithoutAnyPhotosStats,
-                  lotsWithoutAnyPhotosReport?.filename ?? "none",
-                  endpointIssueStats,
-                  endpointIssuesReport?.filename ?? "none",
-                  "[PHOTO SOLR RETRY] success"
-                )
-              );
-              await sendTelegramDocuments(
-                [lotsWithoutAnyPhotosReport, endpointIssuesReport]
-                  .filter((file): file is GeneratedReportFile => Boolean(file))
-                  .map(file => ({
-                    path: file.path,
-                    filename: file.filename,
-                    caption:
-                      file.filename === lotsWithoutAnyPhotosReport?.filename
-                        ? `Лоти без фото (${formatCount(lotsWithoutAnyPhotosStats.total)})`
-                        : `Проблеми endpoint (${formatCount(endpointIssueStats.total)})`,
-                  }))
-              );
-            } finally {
-              await cleanupReportFiles([lotsWithoutAnyPhotosReport, endpointIssuesReport]);
-            }
-          },
-          { notifyError: true }
-        );
-      },
-      {
-        timezone: env.app.tz,
-      }
-    );
-  }
-
   if (env.maintenance.enabled && retentionCron) {
     cron.schedule(
       retentionCron,
@@ -421,8 +334,6 @@ export async function startScheduler(): Promise<void> {
         `Cron CSV: ${env.schedule.ingestCron}`,
         `Окремий photo retry: ${describeCron(photoRetryCron)}`,
         ...(photoRetryCron ? [`Cron photo retry: ${photoRetryCron}`] : []),
-        `Окремий photo solr retry: ${describeCron(photoSolrRetryCron)}`,
-        ...(photoSolrRetryCron ? [`Cron photo solr retry: ${photoSolrRetryCron}`] : []),
         `Retention cleanup: ${env.maintenance.enabled ? describeCron(retentionCron) : "вимкнено"}`,
         ...(env.maintenance.enabled && retentionCron ? [`Cron retention: ${retentionCron}`] : []),
         `Часова зона: ${env.app.tz}`,

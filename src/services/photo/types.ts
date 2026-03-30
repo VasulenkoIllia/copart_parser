@@ -142,19 +142,3 @@ export interface LotImagesEndpointPayload {
     }>;
   }>;
 }
-
-export interface SolrLotImagesEndpointPayload {
-  returnCode?: number;
-  returnCodeDesc?: string;
-  data?: {
-    imagesList?: {
-      totalElements?: number;
-      content?: Array<{
-        imageSeqNumber?: number;
-        fullUrl?: string;
-        highResUrl?: string;
-        thumbnailUrl?: string;
-      }>;
-    };
-  };
-}

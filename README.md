@@ -84,7 +84,6 @@ docker compose run --rm app node dist/index.js db:migrate
 ```bash
 INGEST_CRON=0 0,5,10,15,20 * * *
 PHOTO_RETRY_CRON=*/30 * * * *
-PHOTO_SOLR_RETRY_CRON=15,45 * * * *
 SCHEDULER_RUN_ON_START=true
 
 RETENTION_ENABLED=true
@@ -107,9 +106,6 @@ PROXY_PREFLIGHT_MIN_WORKING=250
 PHOTO_WORKER_TOTAL=12
 PHOTO_FETCH_CONCURRENCY=150
 PHOTO_PROGRESS_EVERY_LOTS=10
-PHOTO_SOLR_FALLBACK_ENABLED=false
-PHOTO_SOLR_FALLBACK_MIN_INTERVAL_MS=1000
-PHOTO_SOLR_FALLBACK_RETRIES=1
 PHOTO_VALIDATE_BY_HEAD_FIRST=false
 PHOTO_ENDPOINT_RETRIES=1
 PHOTO_IMAGE_RETRIES=1
@@ -144,15 +140,15 @@ docker compose up -d mysql app
 - час `ingest`, час `photo`, загальний час оновлення.
 - якщо є проблемні дані, додатково прикріплюється CSV `http_404` (усі HTTP `404` за поточний photo-run).
 
-Для окремих retry-ранiв (`PHOTO_RETRY_CRON`, `PHOTO_SOLR_RETRY_CRON`) в Telegram приходить окремий звіт з:
+Для окремих retry-ранів (`PHOTO_RETRY_CRON`) в Telegram приходить окремий звіт з:
 
 - метриками обробки retry-лотів;
-- stage-міткою (`inventory_retry` або `solr_retry`) і стратегією endpoint (`inventoryv2_only` або `inventoryv2_then_solr_fallback`);
+- stage-міткою (`inventory_retry`) і стратегією endpoint (`inventoryv2_only`);
 - `lots_without_any_photos_total` + розбивкою `missing_due_now / missing_due_future / unknown / ok_without_media`;
 - CSV `lots_without_any_photos` (вже з колонками `photo_status`, `photo_404_count`, `next_photo_retry_at`, `last_seen_at`, `retry_state`);
-- `endpoint_issues_total` (+ `429/403/404`, `inventory/solr`) + CSV `endpoint_issues` за поточне вікно run.
+- `endpoint_issues_total` (+ `429/403/404`, `inventory`) + CSV `endpoint_issues` за поточне вікно run.
 
-Помилки retry-задач (`PHOTO_SYNC`, `PHOTO_SOLR_RETRY`) також відправляються в Telegram як error alert.
+Помилки retry-задач (`PHOTO_SYNC`) також відправляються в Telegram як error alert.
 
 Команди для "чистого" запуску:
 
@@ -170,7 +166,7 @@ docker compose up -d mysql app
 - `npm run photo:sync` — парсинг `lotImages`, перевірка фото, оновлення `copart_media`.
 - `npm run proxy:check` — preflight перевірка проксі, відбір робочих і оцінка місткості.
 - `npm run pipeline:run-once` — повний цикл: ingest + photo sync.
-- `npm run scheduler:start` — планувальник (кожні 5 годин запускає повний pipeline ingest+photo; `PHOTO_RETRY_CRON`, `PHOTO_SOLR_RETRY_CRON` і `RETENTION_CRON` опційні).
+- `npm run scheduler:start` — планувальник (кожні 5 годин запускає повний pipeline ingest+photo; `PHOTO_RETRY_CRON` і `RETENTION_CRON` опційні).
 - `npm run retention:cleanup` — ручний запуск retention/housekeeping.
 - `npm run db:reset` — швидке очищення runtime-таблиць через Docker MySQL.
 - `npm run db:drop` — повний drop/recreate двох БД через Docker MySQL.
@@ -332,7 +328,6 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 - Запис фото працює в merge-режимі: вже знайдені good фото не видаляються при повторних прогонах.
 - Всі спроби запитів і помилки зберігати в `copart_media.photo_fetch_attempts`.
 - Кандидати на `photo:sync` визначаються так: лот є в актуальному `copart_core.lots`, але для нього ще немає жодного валідного `full-size` фото (`variant in ('hd','full','unknown')`) у `copart_media.lot_images`.
-- Якщо `inventoryv2` для `missing`-лота повернув порожній payload, у `PHOTO_SOLR_RETRY` може бути fallback на solr endpoint (керується `PHOTO_SOLR_FALLBACK_*`).
 
 ### Правило "повні фото"
 
@@ -364,10 +359,6 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 Якщо мета — максимально пришвидшити `photo:sync` на великих обсягах, використовуйте такий профіль:
 
 - `PHOTO_FETCH_CONCURRENCY=30` як старт, далі піднімати поступово (`80`, `120`) з моніторингом timeout/429/403.
-- Для обережного fallback на `solr` endpoint (тільки для retry-лотів `photo_status='missing'`) використовуйте:
-  - `PHOTO_SOLR_FALLBACK_ENABLED=true`
-  - `PHOTO_SOLR_FALLBACK_MIN_INTERVAL_MS=1000..2000`
-  - `PHOTO_SOLR_FALLBACK_RETRIES=1`
 - `HTTP_MODE=proxy` або `HTTP_MODE=mixed`, заповнити `PROXY_LIST` або `PROXY_LIST_FILE` (рекомендовано файл `./proxies.txt`).
 - `PROXY_MAX_ROUTES_PER_REQUEST=1..2`, щоб один логічний запит не пробував багато маршрутів поспіль і не створював burst.
 - Ліміт запитів на 1 проксі (рекомендовано 2-5 одночасно) і health-check/blacklist нестабільних проксі.
