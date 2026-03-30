@@ -217,7 +217,7 @@ const TARGETS = [
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-const MAX_BODY_READ = 4096;
+const MAX_BODY_READ = 16384;
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -234,6 +234,15 @@ const DIRECT_ONLY = args.includes("--direct-only");
 const PROXY_ONLY = args.includes("--proxy-only");
 const BROWSER_TLS = args.includes("--browser-tls");
 const COMPARE_TLS = args.includes("--compare-tls");
+
+// ─── Residential proxy (окремий від основного пулу) ──────────────────────────
+//
+// Задається через:
+//   env RESIDENTIAL_PROXY=http://user:pass@host:port
+//   або CLI: --residential-proxy http://user:pass@host:port
+//
+// Якщо задано — додається як окремий маршрут "residential" в таблиці.
+const RESIDENTIAL_PROXY_RAW = getArg("--residential-proxy") || process.env.RESIDENTIAL_PROXY || "";
 
 // ─── Proxy parsing ────────────────────────────────────────────────────────────
 
@@ -624,6 +633,12 @@ function printDiagnostics(total, pass) {
 async function main() {
   const proxies = loadProxyList();
 
+  // Residential proxy route
+  const residentialProxy = RESIDENTIAL_PROXY_RAW ? parseProxyUrl(RESIDENTIAL_PROXY_RAW) : null;
+  if (RESIDENTIAL_PROXY_RAW && !residentialProxy) {
+    console.warn(`${C.yellow}[warn] RESIDENTIAL_PROXY не вдалося розпарсити: ${RESIDENTIAL_PROXY_RAW}${C.reset}`);
+  }
+
   console.log(`\n${C.bold}=== Copart Anti-Bot Proxy Probe ===${C.reset}`);
   console.log(`${C.gray}Date: ${new Date().toISOString()}${C.reset}`);
 
@@ -638,6 +653,9 @@ async function main() {
   console.log(`  tls-mode:    ${tlsModeLabel}`);
   console.log(`  HTTP_MODE:   ${process.env.HTTP_MODE || "direct"}`);
   console.log(`  Proxies loaded: ${proxies.length}`);
+  if (residentialProxy) {
+    console.log(`  ${C.cyan}Residential proxy: ${proxyLabel(residentialProxy)}${C.reset}`);
+  }
   console.log(`\n${C.bold}TLS fingerprint note:${C.reset} ${C.gray}`);
   console.log(`  default-tls  → Node.js/OpenSSL JA3 — Cloudflare може бачити як бот`);
   console.log(`  browser-tls  → Chrome-like ciphers + sigalgs (часткова маскировка)`);
@@ -646,6 +664,7 @@ async function main() {
   // Build routes
   const routes = [];
   if (!PROXY_ONLY) routes.push({ label: "direct (no proxy)", proxy: null });
+  if (residentialProxy) routes.push({ label: `residential: ${proxyLabel(residentialProxy)}`, proxy: residentialProxy });
   if (!DIRECT_ONLY) for (const p of proxies) routes.push({ label: proxyLabel(p), proxy: p });
 
   if (routes.length === 0) {
