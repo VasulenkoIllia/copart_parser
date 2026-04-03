@@ -87,50 +87,45 @@ async function bootstrapOffset(): Promise<number | undefined> {
   }
 }
 
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds} с`;
+  return `${minutes} хв ${seconds} с`;
+}
+
 export function buildRefreshReply(result: Awaited<ReturnType<typeof refreshLotFullyByNumber>>): string {
   switch (result.status) {
     case "blocked_by_global_refresh":
-      return [
-        `Лот ${result.lotNumber}: ручне оновлення зараз недоступне.`,
-        "Йде глобальне оновлення.",
-        `Активні lock-и: ${result.blockingLocks.join(", ") || "невідомо"}`,
-      ].join("\n");
+      return `Лот ${result.lotNumber}: зараз недоступне — йде глобальне оновлення.`;
     case "blocked_by_manual_refresh":
-      return [
-        `Лот ${result.lotNumber}: ручне оновлення вже виконується.`,
-        `Активні lock-и: ${result.blockingLocks.join(", ") || "невідомо"}`,
-      ].join("\n");
+      return `Лот ${result.lotNumber}: вже виконується ручне оновлення.`;
     case "lot_not_found_in_core":
-      return `Лот ${result.lotNumber} відсутній у core базі. Ручне оновлення не запущено.`;
+      return `Лот ${result.lotNumber}: не знайдено в базі.`;
     case "lot_not_found_in_source":
-      return `Лот ${result.lotNumber} є в core, але відсутній у поточному CSV-джерелі.`;
+      return `Лот ${result.lotNumber}: є в базі, але відсутній у поточному CSV.`;
     case "success_without_image_url":
       return [
-        `Лот ${result.lotNumber}: core оновлено, але в CSV немає image URL.`,
-        `rows_inserted=${result.rowsInserted}`,
-        `rows_updated=${result.rowsUpdated}`,
-        `rows_unchanged=${result.rowsUnchanged}`,
-        `photo_attempts_deleted=${result.clearedPhotoAttempts}`,
-        `lot_images_deleted=${result.clearedImages}`,
-        `duration_ms=${result.durationMs}`,
+        `Лот ${result.lotNumber}: оновлено (без image URL)`,
+        `Час: ${formatDuration(result.durationMs)}`,
       ].join("\n");
-    case "success":
-      return [
-        `Лот ${result.lotNumber}: ручне оновлення завершено.`,
-        `rows_inserted=${result.rowsInserted}`,
-        `rows_updated=${result.rowsUpdated}`,
-        `rows_unchanged=${result.rowsUnchanged}`,
-        `rows_updated_image_url_changed=${result.rowsUpdatedImageUrlChanged}`,
-        `rows_updated_other_fields=${result.rowsUpdatedOtherFields}`,
-        `photo_attempts_deleted=${result.clearedPhotoAttempts}`,
-        `images_inserted=${result.photoSummary?.imagesInserted ?? 0}`,
-        `images_updated=${result.photoSummary?.imagesUpdated ?? 0}`,
-        `images_stored_hd=${result.photoSummary?.imagesStoredHd ?? 0}`,
-        `images_stored_full=${result.photoSummary?.imagesStoredFull ?? 0}`,
-        `lots_ok=${result.photoSummary?.lotsOk ?? 0}`,
-        `lots_missing=${result.photoSummary?.lotsMissing ?? 0}`,
-        `duration_ms=${result.durationMs}`,
-      ].join("\n");
+    case "success": {
+      const photo = result.photoSummary;
+      const lines = [`Лот ${result.lotNumber}: оновлено`];
+      if (photo) {
+        lines.push(`Фото: ${photo.imagesInserted} нових · ${photo.imagesUpdated} оновлених`);
+        if (photo.mmemberFallbackAttempted > 0) {
+          const failed = photo.mmemberFallbackAttempted - photo.mmemberFallbackOk;
+          lines.push(`  Mmember: ${photo.mmemberFallbackAttempted} спроб → ${photo.mmemberFallbackOk} ок (${failed} невдало)`);
+        }
+        if (photo.lotsMissing > 0) {
+          lines.push(`  Без фото: ${photo.lotsMissing}`);
+        }
+      }
+      lines.push(`Час: ${formatDuration(result.durationMs)}`);
+      return lines.join("\n");
+    }
   }
 }
 

@@ -86,6 +86,19 @@ function formatCount(value: number): string {
   return new Intl.NumberFormat("uk-UA").format(value);
 }
 
+function formatPercent(part: number, total: number): string {
+  if (total <= 0) return "0.0%";
+  return `${((part / total) * 100).toFixed(1)}%`;
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds} с`;
+  return `${minutes} хв ${seconds} с`;
+}
+
 interface EndpointIssueStats {
   total: number;
   rateLimited429: number;
@@ -134,75 +147,45 @@ async function fetchEndpointIssuesForSummary(
 
 function buildPhotoRetrySuccessMessage(
   summary: PhotoSyncRunSummary | PhotoClusterRunResult,
-  stageLabel: string,
-  endpointStage: string,
   lotsWithoutAnyPhotosStats: LotsWithoutAnyPhotosStats,
-  lotsWithoutAnyPhotosCsv: string,
   endpointIssueStats: EndpointIssueStats,
-  endpointIssuesCsv: string,
-  title: string = "[PHOTO RETRY] success"
 ): string {
   const lotsProcessed = summary.mode === "cluster" ? summary.totalLotsProcessed : summary.lotsProcessed;
-  const photoLinksProcessed =
-    summary.mode === "cluster" ? summary.totalPhotoLinksProcessed : summary.photoLinksProcessed;
   const lotsOk = summary.mode === "cluster" ? summary.totalLotsOk : summary.lotsOk;
   const lotsMissing = summary.mode === "cluster" ? summary.totalLotsMissing : summary.lotsMissing;
   const imagesInserted = summary.mode === "cluster" ? summary.totalImagesInserted : summary.imagesInserted;
   const imagesUpdated = summary.mode === "cluster" ? summary.totalImagesUpdated : summary.imagesUpdated;
-  const imagesStoredHd = summary.mode === "cluster" ? summary.totalImagesStoredHd : summary.imagesStoredHd;
-  const imagesStoredFull = summary.mode === "cluster" ? summary.totalImagesStoredFull : summary.imagesStoredFull;
-  const endpoint404Lots = summary.mode === "cluster" ? summary.totalEndpoint404Lots : summary.endpoint404Lots;
-
   const mmemberAttempted =
-    summary.mode === "sync"
-      ? summary.mmemberFallbackAttempted
-      : summary.totalMmemberFallbackAttempted;
+    summary.mode === "sync" ? summary.mmemberFallbackAttempted : summary.totalMmemberFallbackAttempted;
   const mmemberOk =
     summary.mode === "sync" ? summary.mmemberFallbackOk : summary.totalMmemberFallbackOk;
 
-  const mmemberLines =
-    mmemberAttempted > 0
-      ? [
-          "",
-          "— Residential (mmember) fallback —",
-          `mmember_fallback_attempted=${formatCount(mmemberAttempted)}`,
-          `mmember_fallback_ok=${formatCount(mmemberOk)}`,
-          `mmember_fallback_failed=${formatCount(mmemberAttempted - mmemberOk)}`,
-        ]
-      : [];
+  const lines: string[] = [
+    "Ретрай фото завершено",
+    "",
+    `Оброблено: ${formatCount(lotsProcessed)} лотів`,
+    `  З фото: ${formatCount(lotsOk)} (${formatPercent(lotsOk, lotsProcessed)}) · Без фото: ${formatCount(lotsMissing)}`,
+    `  Нових: ${formatCount(imagesInserted)} · Оновлених: ${formatCount(imagesUpdated)}`,
+  ];
 
-  return [
-    title,
-    `retry_stage=${stageLabel}`,
-    `endpoint_strategy=${endpointStage}`,
-    `mode=${summary.mode}`,
-    `lots_processed=${formatCount(lotsProcessed)}`,
-    `photo_links_processed=${formatCount(photoLinksProcessed)}`,
-    `lots_ok=${formatCount(lotsOk)}`,
-    `lots_missing=${formatCount(lotsMissing)}`,
-    `images_inserted=${formatCount(imagesInserted)}`,
-    `images_updated=${formatCount(imagesUpdated)}`,
-    `images_stored_hd=${formatCount(imagesStoredHd)}`,
-    `images_stored_full=${formatCount(imagesStoredFull)}`,
-    `endpoint_404_lots=${formatCount(endpoint404Lots)}`,
-    ...mmemberLines,
+  if (mmemberAttempted > 0) {
+    const mmemberFailed = mmemberAttempted - mmemberOk;
+    lines.push(`  Mmember: ${formatCount(mmemberAttempted)} спроб → ${formatCount(mmemberOk)} ок (${formatCount(mmemberFailed)} невдало)`);
+  }
+
+  lines.push(
     "",
-    "— Endpoint issues —",
-    `endpoint_issues_total=${formatCount(endpointIssueStats.total)}`,
-    `endpoint_429_rate_limited=${formatCount(endpointIssueStats.rateLimited429)}`,
-    `endpoint_403_forbidden=${formatCount(endpointIssueStats.forbidden403)}`,
-    `endpoint_404_not_found=${formatCount(endpointIssueStats.notFound404)}`,
-    `endpoint_issues_inventory=${formatCount(endpointIssueStats.inventoryIssues)}`,
-    `endpoint_issues_csv=${endpointIssuesCsv}`,
-    "",
-    "— Лоти без фото —",
-    `lots_without_any_photos_total=${formatCount(lotsWithoutAnyPhotosStats.total)}`,
-    `lots_without_any_photos_missing_due_now=${formatCount(lotsWithoutAnyPhotosStats.missingDueNow)}`,
-    `lots_without_any_photos_missing_due_future=${formatCount(lotsWithoutAnyPhotosStats.missingDueFuture)}`,
-    `lots_without_any_photos_unknown=${formatCount(lotsWithoutAnyPhotosStats.unknown)}`,
-    `lots_without_any_photos_ok_status=${formatCount(lotsWithoutAnyPhotosStats.okWithoutMedia)}`,
-    `lots_without_any_photos_csv=${lotsWithoutAnyPhotosCsv}`,
-  ].join("\n");
+    `Лоти без жодного фото: ${formatCount(lotsWithoutAnyPhotosStats.total)}`,
+    `  Прострочені: ${formatCount(lotsWithoutAnyPhotosStats.missingDueNow)} · Очікуються: ${formatCount(lotsWithoutAnyPhotosStats.missingDueFuture)} · Невідомо: ${formatCount(lotsWithoutAnyPhotosStats.unknown)}`,
+  );
+
+  if (endpointIssueStats.total > 0) {
+    lines.push("", `Проблеми API: ${formatCount(endpointIssueStats.total)} (звіт додано)`);
+  }
+
+  lines.push("", `Час: ${formatDuration(summary.durationMs)}`);
+
+  return lines.join("\n");
 }
 
 async function safeRun(
@@ -298,13 +281,8 @@ export async function startScheduler(): Promise<void> {
               await sendTelegramMessage(
                 buildPhotoRetrySuccessMessage(
                   summary,
-                  "inventory_retry",
-                  env.mmemberFallback.enabled ? "inventoryv2+mmember_residential" : "inventoryv2_only",
                   lotsWithoutAnyPhotosStats,
-                  lotsWithoutAnyPhotosReport?.filename ?? "none",
                   endpointIssueStats,
-                  endpointIssuesReport?.filename ?? "none",
-                  "[PHOTO RETRY] success"
                 )
               );
               await sendTelegramDocuments(
@@ -353,15 +331,10 @@ export async function startScheduler(): Promise<void> {
       [
         "Планувальник запущено",
         "",
-        `Оновлення CSV: ${describeCron(env.schedule.ingestCron)}`,
-        `Cron CSV: ${env.schedule.ingestCron}`,
-        `Окремий photo retry: ${describeCron(photoRetryCron)}`,
-        ...(photoRetryCron ? [`Cron photo retry: ${photoRetryCron}`] : []),
-        `Retention cleanup: ${env.maintenance.enabled ? describeCron(retentionCron) : "вимкнено"}`,
-        ...(env.maintenance.enabled && retentionCron ? [`Cron retention: ${retentionCron}`] : []),
-        `Часова зона: ${env.app.tz}`,
-        `Автостарт після рестарту: ${env.schedule.runOnStart ? "так" : "ні"}`,
-        `Telegram bot polling: ${env.telegram.pollingEnabled ? "увімкнено" : "вимкнено"}`,
+        `CSV: ${describeCron(env.schedule.ingestCron)}`,
+        `Ретрай фото: ${describeCron(photoRetryCron)}`,
+        `Очищення: ${env.maintenance.enabled ? describeCron(retentionCron) : "вимкнено"}`,
+        `Автостарт: ${env.schedule.runOnStart ? "так" : "ні"} · Bot: ${env.telegram.pollingEnabled ? "увімкнено" : "вимкнено"}`,
       ].join("\n")
     );
   }

@@ -6,14 +6,12 @@ import { PIPELINE_REFRESH_LOCK } from "../locks/lock-names";
 import { sendTelegramDocuments, sendTelegramError, sendTelegramMessage } from "../notify/telegram";
 import { runPhotoSync } from "../photo/photo-sync";
 import { runPhotoCluster } from "../photo/photo-cluster";
-import { CsvFieldUpdateStat, CsvIngestRunSummary } from "../ingest/types";
+import { CsvIngestRunSummary } from "../ingest/types";
+import { fetchLotsWithoutAnyPhotosStats, LotsWithoutAnyPhotosStats } from "../photo/photo-repository";
 import { PhotoClusterRunResult, PhotoSyncRunSummary } from "../photo/types";
 import { cleanupReportFiles } from "../reports/csv-report";
 import { GeneratedReportFile } from "../reports/types";
-import {
-  REFRESH_LOT_COMMAND_GROUP_EXAMPLE,
-  REFRESH_LOT_COMMAND_PRIVATE_EXAMPLE,
-} from "../telegram/refresh-command";
+import { REFRESH_LOT_COMMAND_PRIVATE_EXAMPLE } from "../telegram/refresh-command";
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat("uk-UA").format(value);
@@ -38,94 +36,60 @@ function formatDuration(durationMs: number): string {
   return `${minutes} хв ${seconds} с`;
 }
 
-function summarizeUpdatedFields(stats: CsvFieldUpdateStat[], limit: number): string {
-  if (stats.length === 0) {
-    return "немає";
-  }
-
-  const visible = stats.slice(0, limit).map(stat => `${stat.field}=${formatCount(stat.lotsUpdated)}`);
-  if (stats.length > limit) {
-    visible.push(`+${formatCount(stats.length - limit)} полів`);
-  }
-
-  return visible.join(", ");
-}
 
 function buildPipelineSuccessMessage(
   ingest: CsvIngestRunSummary,
   photo: PhotoSyncRunSummary | PhotoClusterRunResult,
+  lotsWithoutAnyPhotos: LotsWithoutAnyPhotosStats,
   totalDurationMs: number
 ): string {
-  const photoScanned = photo.mode === "cluster" ? photo.totalLotsScanned : photo.lotsScanned;
   const photoProcessed = photo.mode === "cluster" ? photo.totalLotsProcessed : photo.lotsProcessed;
-  const photoLinksProcessed =
-    photo.mode === "cluster" ? photo.totalPhotoLinksProcessed : photo.photoLinksProcessed;
   const photoOk = photo.mode === "cluster" ? photo.totalLotsOk : photo.lotsOk;
   const photoMissing = photo.mode === "cluster" ? photo.totalLotsMissing : photo.lotsMissing;
   const photoImagesInserted =
     photo.mode === "cluster" ? photo.totalImagesInserted : photo.imagesInserted;
   const photoImagesUpdated =
     photo.mode === "cluster" ? photo.totalImagesUpdated : photo.imagesUpdated;
-  const photoImagesStoredHd =
-    photo.mode === "cluster" ? photo.totalImagesStoredHd : photo.imagesStoredHd;
-  const photoImagesStoredFull =
-    photo.mode === "cluster" ? photo.totalImagesStoredFull : photo.imagesStoredFull;
-  const endpoint404Lots =
-    photo.mode === "cluster" ? photo.totalEndpoint404Lots : photo.endpoint404Lots;
-  const http404Total = photo.mode === "cluster" ? photo.totalHttp404Count : photo.http404Count;
-  const http404CsvAttached = Boolean(photo.http404Report);
+  const mmemberAttempted =
+    photo.mode === "sync" ? photo.mmemberFallbackAttempted : photo.totalMmemberFallbackAttempted;
+  const mmemberOk =
+    photo.mode === "sync" ? photo.mmemberFallbackOk : photo.totalMmemberFallbackOk;
 
-  const csvLines = [
-    `Лотів у CSV: ${formatCount(ingest.rowsValid)}`,
-    `Нових лотів: ${formatCount(ingest.rowsInserted)}`,
-    `Оновлених лотів: ${formatCount(ingest.rowsUpdated)}`,
-    `Без змін: ${formatCount(ingest.rowsUnchanged)}`,
-    `Оновлено зі зміною image_url: ${formatCount(ingest.rowsUpdatedImageUrlChanged)}`,
-    `Оновлено по інших полях: ${formatCount(ingest.rowsUpdatedOtherFields)}`,
-    `Некоректних рядків: ${formatCount(ingest.rowsInvalid)}`,
-    `Некоректних рядків %: ${formatPercent(ingest.rowsInvalid, ingest.rowsTotal)}`,
-    `Видалено зі snapshot: ${formatCount(ingest.prunedLots)}`,
-    `Видалено orphan-фото: ${formatCount(ingest.prunedOrphanLotImages)}`,
-    `Гідровано з media cache: ${formatCount(ingest.hydratedLotsFromMedia)}`,
-    `Змінені CSV поля: ${formatCount(ingest.updatedFields.length)}`,
-    `Топ зміни: ${summarizeUpdatedFields(ingest.updatedFields, 5)}`,
+  const lines: string[] = [
+    "Оновлення Copart завершено",
+    "",
+    `Лоти: ${formatCount(ingest.rowsValid)} у CSV`,
+    `  Нові: ${formatCount(ingest.rowsInserted)} · Оновлені: ${formatCount(ingest.rowsUpdated)} · Без змін: ${formatCount(ingest.rowsUnchanged)}`,
   ];
 
-  const photoLines = [
-    `Кандидатів на photo-stage: ${formatCount(photoScanned)}`,
-    `Опрацьовано лотів: ${formatCount(photoProcessed)}`,
-    `Опрацьовано фото-посилань: ${formatCount(photoLinksProcessed)}`,
-    `З валідними фото: ${formatCount(photoOk)} (${formatPercent(photoOk, photoProcessed)})`,
-    `Без валідних фото: ${formatCount(photoMissing)} (${formatPercent(photoMissing, photoProcessed)})`,
-    `Нових фото в БД: ${formatCount(photoImagesInserted)}`,
-    `Оновлених фото в БД: ${formatCount(photoImagesUpdated)}`,
-    `Збережено HD: ${formatCount(photoImagesStoredHd)}`,
-    `Збережено full fallback: ${formatCount(photoImagesStoredFull)}`,
-    `Лотів з endpoint 404: ${formatCount(endpoint404Lots)}`,
-    `Усього HTTP 404: ${formatCount(http404Total)}`,
-  ];
-
-  const lines = ["Оновлення Copart завершено", "", "CSV", ...csvLines, "", "Фото", ...photoLines];
+  if (ingest.rowsInvalid > 0) {
+    lines.push(`  Некоректних: ${formatCount(ingest.rowsInvalid)} (${formatPercent(ingest.rowsInvalid, ingest.rowsTotal)})`);
+  }
 
   lines.push(
     "",
-    "Файли",
-    `CSV HTTP 404: ${http404CsvAttached ? "додано" : "немає"}`
+    `Фото: ${formatCount(photoOk)} / ${formatCount(photoProcessed)} (${formatPercent(photoOk, photoProcessed)})`,
+    `  Нових: ${formatCount(photoImagesInserted)} · Оновлених: ${formatCount(photoImagesUpdated)}`,
   );
 
-  lines.push(
-    "",
-    "Час виконання",
-    `CSV: ${formatDuration(ingest.durationMs)}`,
-    `Фото: ${formatDuration(photo.durationMs)}`,
-    `Разом: ${formatDuration(totalDurationMs)}`
-  );
+  if (photoMissing > 0) {
+    const missingNote = photo.http404Report ? " (звіт додано)" : "";
+    lines.push(`  Без фото цього циклу: ${formatCount(photoMissing)} лотів${missingNote}`);
+  }
+
+  if (mmemberAttempted > 0) {
+    const mmemberFailed = mmemberAttempted - mmemberOk;
+    lines.push(`  Mmember: ${formatCount(mmemberAttempted)} спроб → ${formatCount(mmemberOk)} ок (${formatCount(mmemberFailed)} невдало)`);
+  }
 
   lines.push(
     "",
-    "Команда",
-    `Приват: ${REFRESH_LOT_COMMAND_PRIVATE_EXAMPLE}`,
-    `Група: ${REFRESH_LOT_COMMAND_GROUP_EXAMPLE}`
+    `Лоти без жодного фото: ${formatCount(lotsWithoutAnyPhotos.total)}`,
+    `  Прострочені: ${formatCount(lotsWithoutAnyPhotos.missingDueNow)} · Очікуються: ${formatCount(lotsWithoutAnyPhotos.missingDueFuture)} · Невідомо: ${formatCount(lotsWithoutAnyPhotos.unknown)}`,
+    "",
+    `Час: CSV ${formatDuration(ingest.durationMs)} · Фото ${formatDuration(photo.durationMs)} · Разом ${formatDuration(totalDurationMs)}`,
+    "",
+    `Команда: ${REFRESH_LOT_COMMAND_PRIVATE_EXAMPLE}`,
   );
 
   return lines.join("\n");
@@ -177,7 +141,8 @@ async function executeFullPipelineOnce(): Promise<void> {
       photoMode: photoResult.mode,
     });
     if (env.telegram.sendSuccessSummary) {
-      await sendTelegramMessage(buildPipelineSuccessMessage(ingestResult.summary, photoResult, totalDurationMs));
+      const lotsWithoutAnyPhotos = await fetchLotsWithoutAnyPhotosStats();
+      await sendTelegramMessage(buildPipelineSuccessMessage(ingestResult.summary, photoResult, lotsWithoutAnyPhotos, totalDurationMs));
       await sendTelegramDocuments(
         reportFiles.map(file => ({
           path: file.path,

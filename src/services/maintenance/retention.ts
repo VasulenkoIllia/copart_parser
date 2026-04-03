@@ -222,19 +222,23 @@ async function executeRetentionCleanup(): Promise<RetentionCleanupSummary> {
   });
 
   if (env.telegram.sendSuccessSummary) {
-    await sendTelegramMessage(
-      [
-        "[RETENTION CLEANUP] success",
-        `deleted_orphan_lot_images=${summary.deletedOrphanLotImages}`,
-        `deleted_orphan_photo_fetch_attempts=${summary.deletedOrphanPhotoFetchAttempts}`,
-        `deleted_photo_fetch_attempts=${summary.deletedPhotoFetchAttempts}`,
-        `deleted_invalid_csv_rows=${summary.deletedInvalidCsvRows}`,
-        `deleted_ingest_runs=${summary.deletedIngestRuns}`,
-        `deleted_photo_runs=${summary.deletedPhotoRuns}`,
-        `deleted_photo_cluster_runs=${summary.deletedPhotoClusterRuns}`,
-        `duration_ms=${summary.durationMs}`,
-      ].join("\n")
-    );
+    const totalDeleted =
+      summary.deletedOrphanLotImages +
+      summary.deletedOrphanPhotoFetchAttempts +
+      summary.deletedPhotoFetchAttempts +
+      summary.deletedInvalidCsvRows +
+      summary.deletedIngestRuns +
+      summary.deletedPhotoRuns +
+      summary.deletedPhotoClusterRuns;
+
+    if (totalDeleted > 0) {
+      const totalSeconds = Math.max(0, Math.round(summary.durationMs / 1000));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      const duration = minutes > 0 ? `${minutes} хв ${seconds} с` : `${seconds} с`;
+      const formatted = new Intl.NumberFormat("uk-UA").format(totalDeleted);
+      await sendTelegramMessage(`Очищення бази: видалено ${formatted} записів (${duration})`);
+    }
   }
 
   return summary;
