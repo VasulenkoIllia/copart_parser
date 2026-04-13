@@ -203,22 +203,51 @@ function runWorker(
       stdio: "inherit",
     });
 
+    let timedOut = false;
+
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      logger.warn("Photo cluster worker timed out, sending SIGTERM", {
+        workerIndex,
+        timeoutMs: env.photo.clusterWorkerTimeoutMs,
+      });
+      child.kill("SIGTERM");
+    }, env.photo.clusterWorkerTimeoutMs);
+
     child.once("error", error => {
+      clearTimeout(timeoutHandle);
       reject(error);
     });
 
     child.once("close", (exitCode, signal) => {
+      clearTimeout(timeoutHandle);
+      const durationMs = Date.now() - startedAt;
+      if (timedOut) {
+        logger.error("Photo cluster worker killed after timeout", {
+          workerIndex,
+          exitCode,
+          signal,
+          durationMs,
+          timeoutMs: env.photo.clusterWorkerTimeoutMs,
+        });
+        reject(
+          new Error(
+            `Photo cluster worker ${workerIndex} timed out after ${env.photo.clusterWorkerTimeoutMs}ms`
+          )
+        );
+        return;
+      }
       logger.info("Photo cluster worker exited", {
         workerIndex,
         exitCode,
         signal,
-        durationMs: Date.now() - startedAt,
+        durationMs,
       });
       resolve({
         workerIndex,
         exitCode,
         signal,
-        durationMs: Date.now() - startedAt,
+        durationMs,
       });
     });
   });

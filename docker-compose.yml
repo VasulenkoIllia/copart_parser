@@ -39,6 +39,7 @@ services:
     environment:
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
+      NODE_OPTIONS: "--max-old-space-size=2048"
     volumes:
       - ./proxies.txt:/app/proxies.txt:ro
     command: ["node", "dist/index.js", "scheduler:start"]

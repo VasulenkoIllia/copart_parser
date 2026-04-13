@@ -84,6 +84,7 @@ interface AppEnv {
     acceptedExtensions: string[];
     retryBaseDelayMinutes: number;
     retryMaxDelayMinutes: number;
+    clusterWorkerTimeoutMs: number;
   };
   proxy: {
     mode: HttpMode;
@@ -330,6 +331,7 @@ const env: AppEnv = {
     acceptedExtensions: parseList("PHOTO_ACCEPTED_EXTENSIONS"),
     retryBaseDelayMinutes: toInt("PHOTO_RETRY_BASE_DELAY_MINUTES", 30),
     retryMaxDelayMinutes: toInt("PHOTO_RETRY_MAX_DELAY_MINUTES", 120),
+    clusterWorkerTimeoutMs: toInt("PHOTO_CLUSTER_WORKER_TIMEOUT_MS", 7_200_000),
   },
   proxy: {
     mode: parseHttpMode("HTTP_MODE", "direct"),
@@ -442,6 +444,10 @@ if (env.telegram.pollTimeoutSec < 1 || env.telegram.pollTimeoutSec > 50) {
 
 if (env.photo.workerIndex < 0 || env.photo.workerIndex >= env.photo.workerTotal) {
   throw new Error("PHOTO_WORKER_INDEX must be in range [0, PHOTO_WORKER_TOTAL - 1]");
+}
+
+if (env.photo.clusterWorkerTimeoutMs < 1000) {
+  throw new Error("PHOTO_CLUSTER_WORKER_TIMEOUT_MS must be >= 1000");
 }
 
 if (env.photo.progressEveryLots < 1) {
