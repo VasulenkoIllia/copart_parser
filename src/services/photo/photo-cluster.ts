@@ -112,36 +112,8 @@ async function resolvePhotoHealthcheckUrlFromLots(): Promise<string | null> {
       defaultYardNumber: 1,
     });
 
-    if (!endpointUrl) {
-      continue;
-    }
-
-    try {
-      const response = await axios.request({
-        method: "GET",
-        url: endpointUrl,
-        timeout: env.photo.httpTimeoutMs,
-        maxRedirects: 5,
-        proxy: false,
-        validateStatus: () => true,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-          Accept: "application/json, text/plain, */*",
-          Referer: "https://www.copart.com/",
-        },
-      });
-
-      if (response.status < 200 || response.status >= 300) {
-        continue;
-      }
-
-      const samplePhotoUrl = pickSamplePhotoUrl(response.data);
-      if (samplePhotoUrl) {
-        return samplePhotoUrl;
-      }
-    } catch {
-      // Skip this lot and try next probe candidate.
+    if (endpointUrl) {
+      return endpointUrl;
     }
   }
 
