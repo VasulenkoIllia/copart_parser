@@ -326,7 +326,7 @@ async function processLot(
 ): Promise<void> {
   const storageMode = options.storageMode ?? "merge";
   const lotStartedAt = Date.now();
-  const endpointProtocol = env.proxy.mode === "direct" ? "https" : "http";
+  const endpointProtocol = "https";
   const endpointUrl =
     normalizeCopartLotImagesUrl(candidate.imageUrl, {
       protocol: endpointProtocol,
