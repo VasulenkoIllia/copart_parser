@@ -107,20 +107,32 @@
 | 2026-03-30 | `mmember.copart.com` POST API — тест direct + residential (Mac та сервер) | Passed | Direct Mac IP → PASS; Direct server IP (datacenter) → HTTP 403 заблоковано Incapsula; Residential proxy `rp.scrapegw.com:6060` → PASS з сервера |
 | 2026-03-30 | `inventoryv2.copart.io` — тест лотів зі старими фото | Observed | Лот `74590025` (path `0226/...`): `inventoryv2` повертає `imgCount=12, lotImages=[]` (порожній); `mmember` через residential proxy → `lotImages=12` (всі фото є) |
 | 2026-03-30 | Probe script — тест 1000 datacenter проксі на всіх endpoints | Observed | `PASS=0, BOT=1000` для всіх Copart endpoints через datacenter проксі; `mmember.copart.com` також блокує datacenter IP |
+| 2026-04-13 | Photo cluster worker timeout protection | Passed | Воркер отримує SIGTERM після 2h timeout, батьківський процес не зависає на high swap, run lock у БД відпускається |
+| 2026-04-13 | HTTPS inventoryv2 in proxy mode + CONNECT tunneling | Passed | Residential proxy з `https://inventoryv2.copart.io` → PASS; попередній `http://` мав 403 від Incapsula |
+| 2026-04-13 | Proxy healthcheck витестована проти inventoryv2 (не CDN) | Passed | Функція `resolvePhotoHealthcheckUrlFromLots()` повертає реальний API URL; healthcheck-проксі успішно досягають endpoint |
+| 2026-04-13 | HTTP 407 fallback в mixed mode (CSV download через residential) | Passed | CSV download через residential proxy → 407, code спрацьовує fallback на direct → 200, інжест продовжується |
+| 2026-04-13 | Docker NODE_OPTIONS heap limit | Passed | Swap usage упав з ~70% на ~20%; worker timeout більше не спрацьовує в нормальних умовах |
+
+## Що готово (продовження 2026-04-13)
+
+| Дата | Компонент | Статус | Коментар |
+|---|---|---|---|
+| 2026-04-13 | Photo cluster worker timeout | Done | Додано `PHOTO_CLUSTER_WORKER_TIMEOUT_MS` (default 2h) для запобігання зависання на high swap |
+| 2026-04-13 | HTTPS for inventoryv2 in proxy mode | Done | Завжди використовуємо `https://inventoryv2.copart.io` для CONNECT tunneling через HTTPS-proxy |
+| 2026-04-13 | Proxy healthcheck fix | Done | `resolvePhotoHealthcheckUrlFromLots()` повертає реальний inventoryv2 URL замість витягнутого photo CDN URL |
+| 2026-04-13 | HTTP 407 as retryable status | Done | Додано 407 до `isRetryableStatus()` для fallback в mixed mode |
+| 2026-04-13 | Proxy migration datacenter → residential | Done | Змінено на один rotating residential proxy (rp.scrapegw.com:6060) для обходу Incapsula блокування |
+| 2026-04-13 | Docker NODE_OPTIONS heap limit | Done | Додано `--max-old-space-size=2048` до docker-compose для зменшення swap-pressure |
 
 ## В роботі
 
 | Задача | Пріоритет | Власник | Статус |
 |---|---|---|---|
-| Fallback photo sync для ~1000 лотів де `inventoryv2` повертає порожній `lotImages[]` | High | TBD | In Progress — API знайдено, потрібна реалізація в `photo-sync.ts` |
-| Фінальна БД без `missing` лотів | High | TBD | Planned |
 | CSV quality gate (`max_invalid_%`) | High | TBD | Planned |
-| Кеш перевірок фото по URL hash | High | TBD | Planned |
 | Alerting по аномаліях (invalid/404/duration) | High | TBD | Planned |
 | Claim-based balancing для multi-worker | High | TBD | Planned |
 | Health/metrics endpoint | Medium | TBD | Planned |
 | Retention policy для `photo_fetch_attempts` | Medium | TBD | Planned |
-| Proxy pool health tracking | Medium | TBD | Planned |
 
 ## Backlog
 

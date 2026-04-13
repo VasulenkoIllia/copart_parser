@@ -75,11 +75,19 @@ docker compose run --rm app node dist/index.js db:migrate
 - `docker compose run --rm app node dist/index.js proxy:check` — перевірка проксі-пулу.
 - `./scripts/fresh-test.sh` — повний чистий тестовий цикл (`db-drop -> migrate -> ingest(1000) -> photo:cluster -> SQL summary`).
 
-## Автоматичний режим
+## Автоматичний режим (Production)
 
 Для бойового автооновлення кожні 5 годин:
 
-1. Заповнити `.env`:
+1. Налаштувати `proxies.txt` (residential proxy):
+
+```
+http://USERNAME:PASSWORD@rp.scrapegw.com:6060
+```
+
+**Важливо:** Це один rotating residential proxy (кожне з'єднання отримує нову IP). Datacenter proxies більше не підходять — вони заблоковані Imperva Incapsula на всіх Copart endpoints. До 2026-04-13 використовувалась дата-центр-проксі з файлу `proxies.txt`, але всі вони заблоковані на `inventoryv2.copart.io`.
+
+2. Заповнити `.env`:
 
 ```bash
 INGEST_CRON=0 0,5,10,15,20 * * *
@@ -96,20 +104,29 @@ RETENTION_INGEST_RUNS_DAYS=45
 RETENTION_PHOTO_RUNS_DAYS=45
 RETENTION_PHOTO_CLUSTER_RUNS_DAYS=45
 
-HTTP_MODE=proxy
+# Proxy: residential only (mixed mode allows direct fallback for CSV)
+HTTP_MODE=mixed
 PROXY_LIST_FILE=./proxies.txt
+PROXY_PREFLIGHT_ENABLED=false
+PROXY_PREFLIGHT_TIMEOUT_MS=15000
+PROXY_PREFLIGHT_CONCURRENCY=10
+PROXY_PREFLIGHT_TOP_N=5
+PROXY_PREFLIGHT_MIN_WORKING=1
 PROXY_AUTO_SELECT_FOR_PHOTO=true
 PROXY_MAX_ROUTES_PER_REQUEST=5
-PROXY_PREFLIGHT_TOP_N=300
-PROXY_PREFLIGHT_MIN_WORKING=250
 
+# Worker cluster with timeout protection (prevents hung workers on high swap)
 PHOTO_WORKER_TOTAL=12
 PHOTO_FETCH_CONCURRENCY=150
 PHOTO_PROGRESS_EVERY_LOTS=10
 PHOTO_VALIDATE_BY_HEAD_FIRST=false
-PHOTO_ENDPOINT_RETRIES=1
 PHOTO_IMAGE_RETRIES=1
+PHOTO_CLUSTER_WORKER_TIMEOUT_MS=7200000
 MYSQL_POOL_MAX=10
+
+# mmember fallback for ~1000 old lots where inventoryv2 returns empty lotImages
+MMEMBER_FALLBACK_ENABLED=true
+MMEMBER_FALLBACK_PROXY_URL=http://USERNAME:PASSWORD@rp.scrapegw.com:6060
 
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=...
@@ -118,7 +135,7 @@ TELEGRAM_SEND_SUCCESS_SUMMARY=true
 TELEGRAM_SEND_ERROR_ALERTS=true
 ```
 
-2. Застосувати міграції і запустити scheduler:
+3. Застосувати міграції і запустити scheduler:
 
 ```bash
 docker compose build app
@@ -370,24 +387,28 @@ http://inventoryv2.copart.io/v1/lotImages/<lot_number>?country=us&brand=cprt&yar
 
 ### Proxy preflight (перед запуском)
 
-Перед `photo:sync` сервіс може автоматично перевіряти проксі і брати тільки робочі:
-перевірка виконується на старті кожного `photo:sync` запуску.
+З 2026-04-13 використовується один rotating residential proxy. Preflight більш не потрібен для ідентифікації робочих проксів:
 
-- `PROXY_LIST_FILE=./proxies.txt`
-- `PROXY_PREFLIGHT_ENABLED=true`
-- `PROXY_PREFLIGHT_TOP_N=20` (для старту брати 20 найстабільніших)
-- `PROXY_PREFLIGHT_CONCURRENCY=100`
-- `PROXY_PREFLIGHT_TIMEOUT_MS=7000`
-- `PROXY_PREFLIGHT_MIN_WORKING=5`
-- `PROXY_PREFLIGHT_STRICT=false` (`true` -> падати, якщо робочих менше `MIN_WORKING`)
-- `PROXY_MAX_ROUTES_PER_REQUEST=5` — скільки top-проксі максимум пробує один HTTP-запит, щоб не було довгих "хвостів" на 300 послідовних proxy-route.
+**Рекомендована конфігурація (з residential proxy):**
 
-Автовідбір проксі під фото (рекомендовано для швидкості):
+```bash
+PROXY_LIST_FILE=./proxies.txt          # один rotating residential proxy
+PROXY_PREFLIGHT_ENABLED=false          # не треба, residential успішно проходить всі endpoints
+PROXY_PREFLIGHT_TIMEOUT_MS=15000
+PROXY_PREFLIGHT_CONCURRENCY=10
+PROXY_PREFLIGHT_TOP_N=5
+PROXY_PREFLIGHT_MIN_WORKING=1
+```
+
+**Розпізнавання проблем із старими datacenter proxies:**
+
+Якщо логи показують багато `HTTP 403` / `bot detection` на `inventoryv2.copart.io`, це значить, що все ще використовуються datacenter proxies. Вони заблоковані Imperva Incapsula. Перейдіть на residential proxy (див. вище).
+
+Автовідбір проксі під фото (рекомендовано):
 
 - `PROXY_AUTO_SELECT_FOR_PHOTO=true` — у `photo:cluster` перед стартом воркерів береться 1 реальний URL фото з БД і preflight виконується саме по ньому.
 - `PROXY_AUTO_SELECT_PROBE_LOTS=20` — скільки останніх лотів перевіряти, щоб знайти валідний URL фото для benchmark.
-- Рекомендований розмір робочого пулу: `PROXY_PREFLIGHT_TOP_N=250..350` (зазвичай найкращий баланс швидкості/стабільності).
-- Для server benchmark-профілю в `fresh-test.sh` зафіксовано дефолт: `PROXY_PREFLIGHT_TOP_N=300`, `PROXY_PREFLIGHT_MIN_WORKING=250`, `PROXY_MAX_ROUTES_PER_REQUEST=5`.
+- `PROXY_MAX_ROUTES_PER_REQUEST=5` — скільки top-проксі максимум пробує один HTTP-запит, щоб не було довгих "хвостів" на послідовних proxy-route.
 - Після автовідбору воркери отримують тільки selected pool і працюють без повторного preflight.
 
 Ручна перевірка пулу:
@@ -400,12 +421,34 @@ npm run proxy:check
 Файл `proxies.txt` додано в `.gitignore`, щоб не комітити приватні проксі.
 Невалідні рядки проксі не падають весь процес: вони пропускаються з WARN-логом `Invalid proxies skipped`.
 
+### Критичні багфікси (2026-04-13)
+
+**1. HTTPS для inventoryv2 через проксі (Incapsula CONNECT tunneling)**
+- **Проблема:** Код використовував `http://` для `inventoryv2.copart.io` в proxy-режимі. HTTP-трафік через HTTPS-proxy видимий Incapsula, який блокує даний-центр IPs.
+- **Рішення:** Завжди використовуємо `https://inventoryv2.copart.io`, що забезпечує CONNECT tunneling (трафік зашифрований від Incapsula).
+- **Файл:** `src/services/photo/photo-sync.ts` — змінено `endpointProtocol` на завжди `"https"`.
+
+**2. Proxy healthcheck тестував неправильний endpoint (CDN замість API)**
+- **Проблема:** Функція `resolvePhotoHealthcheckUrlFromLots()` витягувала real inventoryv2 URL, потім витягувала з нього photo URL (cs.copart.com CDN), і тестувала проксі саме на CDN. Datacenter proxies проходили CDN-тест, але падали на реальному API (Incapsula).
+- **Рішення:** Повертаємо `inventoryv2.copart.io` URL напряму, без fetching. Так proxies тестуються проти реального endpoint.
+- **Файл:** `src/services/photo/photo-cluster.ts` — функція `resolvePhotoHealthcheckUrlFromLots()`.
+
+**3. HTTP 407 не был retryable (ScapeGW residential proxy issue)**
+- **Проблема:** ScapeGW residential proxy повертає HTTP 407 для деяких endpoints (CSV download). Код не обробляв 407 як retryable, тому fallback на direct не спрацьовував.
+- **Рішення:** Додано 407 до `isRetryableStatus()`. В `HTTP_MODE=mixed` код 407 от proxy автоматично спрацює fallback до direct.
+- **Файл:** `src/lib/http-client.ts`, функція `isRetryableStatus()`.
+
+**4. Worker timeout для запобігання зависання (high swap issue)**
+- **Проблема:** На серверах з високим swap (~70%) таймери HTTP не спрацьовували вчасно, воркери зависали навіки. Батьківський процес постійно поновлював DB lock, не закриваючи run.
+- **Рішення:** Додано `PHOTO_CLUSTER_WORKER_TIMEOUT_MS` (default 2 години). По timeout воркер отримує SIGTERM.
+- **Файл:** `src/services/photo/photo-cluster.ts`, `src/config/env.ts`.
+
 ### Обробка редіректів (важливо)
 
-- URL `inventoryv2.copart.io` нормалізується перед `photo:sync`: у `direct` режимі використовується `https://`, у `proxy/mixed` — `http://` (щоб уникати `socket hang up` на частині HTTP-проксі при прямому HTTPS CONNECT).
+- URL `inventoryv2.copart.io` завжди використовує `https://` (змінено 2026-04-13 для CONNECT tunneling через проксі).
 - Для `lotImages` автоматично добудовуються обов'язкові query-параметри, якщо їх немає в CSV URL: `country=us`, `brand=cprt`, `yardNumber` (з лота, fallback `1`).
 - HTTP-клієнт має fallback ручного проходження `3xx + location`, якщо провайдер/проксі віддав редірект без фінального `2xx`.
-- `proxy preflight` робить fallback `HEAD -> GET` навіть коли `HEAD` падає по мережевій помилці (а не тільки при `405`), і для `https://inventoryv2...` додатково перевіряє `http://inventoryv2...`.
+- `proxy preflight` робить fallback `HEAD -> GET` навіть коли `HEAD` падає по мережевій помилці (а не тільки при `405`).
 
 Підтримувані формати рядка проксі:
 
@@ -519,6 +562,74 @@ docker compose run --rm \
 
 - `lotsPerMin` — цільовий KPI.
 - `http404Count`, `lotsMissing`, `imagesPerMin` — контроль якості джерела/мережі.
+
+## Діагностика та дебагування (2026-04-13)
+
+### Проблема: Photo cluster worker зависає або таймаутиться
+
+**Симптом:** Логи показують `SIGTERM` або `worker timeout` одного або кількох воркерів.
+
+**Причина:** На серверах з високим swap (~70%+) HTTP таймери можуть спрацьовувати пізно. Воркер повисає на `httpRequest`.
+
+**Рішення:**
+1. Перевірте `free -h` на сервері. Якщо swap > 50%, відновіть фізичну пам'ять або додайте `NODE_OPTIONS="--max-old-space-size=2048"` (уже в docker-compose).
+2. Перевірте значення `PHOTO_CLUSTER_WORKER_TIMEOUT_MS` (default 2 години = 7_200_000 ms). Для більш дослідних workloads можна поднести до `14_400_000` (4 години).
+3. Логи worker'а будуть показувати `signal SIGTERM` перед зупинкою. Батьківський `photo:cluster` повинен детектити exit-код і завершити цикл з помилкою у БД.
+
+### Проблема: `HTTP 403 Forbidden` або `HTTP 429 Too Many Requests` на inventoryv2
+
+**Симптом:** Логи показують масиву 403/429 від `inventoryv2.copart.io`.
+
+**Причина #1 — Datacenter proxy:** Imperva Incapsula блокує датацентр-IPs. До 2026-04-13 використовувались datacenter proxies.
+
+**Рішення:** Перейти на residential proxy:
+```bash
+# proxies.txt
+http://USERNAME:PASSWORD@rp.scrapegw.com:6060
+
+# .env
+HTTP_MODE=mixed
+PROXY_PREFLIGHT_ENABLED=false
+```
+
+**Причина #2 — HTTP замість HTTPS:** Код може використовувати `http://inventoryv2...` в proxy-режимі (баг до 2026-04-13).
+
+**Рішення:** Оновитися на актуальну версію. Код завжди використовує `https://` для CONNECT tunneling.
+
+### Проблема: CSV download падає з HTTP 407 Proxy Auth Required
+
+**Симптом:** `ingest:csv` падає з помилкою 407 на CSV download.
+
+**Причина:** Деякі residential proxies повертають 407 для конкретних endpoints (зокрема CSV).
+
+**Рішення:** Переключитися на `HTTP_MODE=mixed`:
+```bash
+HTTP_MODE=mixed        # Спробує proxy, при 407 fallback на direct
+```
+
+Код обробляє 407 як retryable status (змінено 2026-04-13), тому запит буде переспроб через direct connection.
+
+### Проблема: Photo sync дуже повільна (< 100 lots/min)
+
+**Причина #1 — Неправильна конфігурація preflight:** Preflight тестує неправильний endpoint (old healthcheck URL).
+
+**Рішення:** Переконатись, що:
+```bash
+PROXY_AUTO_SELECT_FOR_PHOTO=true          # Витягне реальний photo URL з DB
+PROXY_PREFLIGHT_ENABLED=false             # Не треба для residential
+```
+
+**Причина #2 — Malformed inventoryv2 URL:** Код витягує фото з CDN URL замість реального API.
+
+**Рішення:** Функція `resolvePhotoHealthcheckUrlFromLots()` повинна повертати саме `inventoryv2.copart.io/v1/lotImages/...`, а не CDN URL.
+
+**Причина #3 — Низький PHOTO_FETCH_CONCURRENCY:** Default = 25. Спробуйте поднести до 100-150.
+
+**Рішення:**
+```bash
+PHOTO_FETCH_CONCURRENCY=150
+PHOTO_WORKER_TOTAL=12
+```
 
 ## Стабільність (Roadmap)
 
