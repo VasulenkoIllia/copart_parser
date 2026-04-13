@@ -709,7 +709,8 @@ function getProxyRouteOrder(): Array<ProxyConfig | null> {
 }
 
 function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 425 || status === 429 || status >= 500;
+  // 407 = Proxy Authentication Required: try next route (e.g. direct fallback in mixed mode)
+  return status === 407 || status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 export async function httpRequest<T = unknown>(
