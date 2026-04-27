@@ -406,12 +406,19 @@ async function sendRouteRequest(
 
   // Absolute wall-clock deadline so slow-trickle responses through residential
   // proxies don't bypass the axios response timeout (which resets on each byte).
+  // Skip for streaming responses — the socket stays open intentionally while the
+  // caller reads the body (e.g. CSV downloads), so a deadline here would abort it.
+  const isStreamResponse = config.responseType === "stream";
   const absoluteTimeoutMs =
-    typeof config.timeout === "number" && config.timeout > 0 ? config.timeout : 30_000;
+    !isStreamResponse && typeof config.timeout === "number" && config.timeout > 0
+      ? config.timeout
+      : null;
   const controller = new AbortController();
-  const absoluteTimeoutId = setTimeout(() => {
-    controller.abort(new Error(`Request wall-clock timeout after ${absoluteTimeoutMs}ms`));
-  }, absoluteTimeoutMs);
+  const absoluteTimeoutId = absoluteTimeoutMs
+    ? setTimeout(() => {
+        controller.abort(new Error(`Request wall-clock timeout after ${absoluteTimeoutMs}ms`));
+      }, absoluteTimeoutMs)
+    : null;
 
   let remainingManualRedirects = configuredMaxRedirects;
   let currentConfig: AxiosRequestConfig = { ...config };
@@ -482,7 +489,9 @@ async function sendRouteRequest(
     };
   }
   } finally {
-    clearTimeout(absoluteTimeoutId);
+    if (absoluteTimeoutId) {
+      clearTimeout(absoluteTimeoutId);
+    }
   }
 }
 
