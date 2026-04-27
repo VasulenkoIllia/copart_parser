@@ -17,6 +17,7 @@ interface AppEnv {
     ingestCron: string;
     photoRetryCron: string;
     runLockTtlSec: number;
+    lockRenewIntervalSec: number;
     runOnStart: boolean;
   };
   maintenance: {
@@ -263,7 +264,8 @@ const env: AppEnv = {
   schedule: {
     ingestCron: optional("INGEST_CRON", "0 0,5,10,15,20 * * *"),
     photoRetryCron: optional("PHOTO_RETRY_CRON", ""),
-    runLockTtlSec: toInt("RUN_LOCK_TTL_SEC", 16200),
+    runLockTtlSec: toInt("RUN_LOCK_TTL_SEC", 600),
+    lockRenewIntervalSec: toInt("LOCK_RENEW_INTERVAL_SEC", 60),
     runOnStart: toBoolean("SCHEDULER_RUN_ON_START", false),
   },
   maintenance: {

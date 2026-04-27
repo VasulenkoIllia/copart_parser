@@ -149,7 +149,10 @@ export async function withAppLocks<T>(
     handles.push(handle);
   }
 
-  const renewEveryMs = Math.max(1_000, Math.floor((env.schedule.runLockTtlSec * 1_000) / 3));
+  // Renewal interval is configured independently from TTL so that:
+  // - TTL stays short (dead locks auto-expire quickly after a crash/restart)
+  // - Renewal keeps long-running jobs (photo cluster etc.) alive indefinitely
+  const renewEveryMs = Math.max(1_000, env.schedule.lockRenewIntervalSec * 1_000);
   let renewInFlight = false;
   let lockLostError: Error | null = null;
   const timer = setInterval(() => {
