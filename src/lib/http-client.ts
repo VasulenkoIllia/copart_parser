@@ -404,10 +404,20 @@ async function sendRouteRequest(
       ? Math.max(0, Math.floor(config.maxRedirects))
       : DEFAULT_MAX_REDIRECTS;
 
+  // Absolute wall-clock deadline so slow-trickle responses through residential
+  // proxies don't bypass the axios response timeout (which resets on each byte).
+  const absoluteTimeoutMs =
+    typeof config.timeout === "number" && config.timeout > 0 ? config.timeout : 30_000;
+  const controller = new AbortController();
+  const absoluteTimeoutId = setTimeout(() => {
+    controller.abort(new Error(`Request wall-clock timeout after ${absoluteTimeoutMs}ms`));
+  }, absoluteTimeoutMs);
+
   let remainingManualRedirects = configuredMaxRedirects;
   let currentConfig: AxiosRequestConfig = { ...config };
   let cookieJar = new Map<string, string>();
 
+  try {
   while (true) {
     const transport = getRouteTransport(route);
     const currentHeaders =
@@ -424,6 +434,7 @@ async function sendRouteRequest(
       // Handle redirects manually so route errors on HTTPS CONNECT do not get swallowed
       // by axios internal redirect flow.
       maxRedirects: 0,
+      signal: controller.signal,
       ...transport,
       validateStatus: () => true,
       headers: currentHeaders as AxiosRequestConfig["headers"],
@@ -469,6 +480,9 @@ async function sendRouteRequest(
       ...currentConfig,
       url: redirectedTo,
     };
+  }
+  } finally {
+    clearTimeout(absoluteTimeoutId);
   }
 }
 
@@ -709,8 +723,8 @@ function getProxyRouteOrder(): Array<ProxyConfig | null> {
 }
 
 function isRetryableStatus(status: number): boolean {
-  // 407 = Proxy Authentication Required: try next route (e.g. direct fallback in mixed mode)
-  return status === 407 || status === 408 || status === 425 || status === 429 || status >= 500;
+  // 403/407 = proxy blocked/auth required: try next route (e.g. direct fallback in mixed mode)
+  return status === 403 || status === 407 || status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 export async function httpRequest<T = unknown>(

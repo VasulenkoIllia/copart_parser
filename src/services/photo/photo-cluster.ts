@@ -17,6 +17,7 @@ import {
 } from "./photo-repository";
 import { PhotoClusterRunResult } from "./types";
 import { tryCreatePhoto404ReportForClusterRun } from "../reports/run-artifacts";
+import { sendTelegramError } from "../notify/telegram";
 
 interface WorkerRunResult {
   workerIndex: number;
@@ -318,6 +319,20 @@ export async function runPhotoCluster(
           durationMs: worker.durationMs,
         })),
       });
+
+      if (
+        summary.totalMmemberFallbackAttempted >= 5 &&
+        summary.totalMmemberFallbackOk === 0
+      ) {
+        await sendTelegramError(
+          "MMEMBER PROXY FAILURE",
+          new Error(
+            `mmember: ${summary.totalMmemberFallbackAttempted} attempts across ${workerTotal} workers, 0 succeeded.\n` +
+              `Proxy may be misconfigured, unpaid, or blocked.\n` +
+              `Check MMEMBER_FALLBACK_PROXY_URL on the server.`
+          )
+        );
+      }
 
       if (failed.length > 0) {
         throw new Error(failureMessage ?? "photo:cluster failed");

@@ -645,6 +645,21 @@ async function executePhotoSync(
     await completePhotoRunSuccess(runId, counters);
     logMmemberStats(counters.mmemberFallbackAttempted, counters.mmemberFallbackOk);
 
+    if (
+      env.telegram.sendErrorAlerts &&
+      counters.mmemberFallbackAttempted >= 5 &&
+      counters.mmemberFallbackOk === 0
+    ) {
+      await sendTelegramError(
+        "MMEMBER PROXY FAILURE",
+        new Error(
+          `mmember: ${counters.mmemberFallbackAttempted} attempts, 0 succeeded.\n` +
+            `Proxy may be misconfigured, unpaid, or blocked.\n` +
+            `Check MMEMBER_FALLBACK_PROXY_URL on the server.`
+        )
+      );
+    }
+
     const shouldBuild404Report =
       options.build404Report ?? ((options.notifySuccess ?? true) && env.telegram.sendSuccessSummary);
     if (shouldBuild404Report) {

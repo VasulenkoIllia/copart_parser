@@ -421,6 +421,18 @@ npm run proxy:check
 Файл `proxies.txt` додано в `.gitignore`, щоб не комітити приватні проксі.
 Невалідні рядки проксі не падають весь процес: вони пропускаються з WARN-логом `Invalid proxies skipped`.
 
+### Виправлення (2026-04-27)
+
+**1. mmember proxy failure — Telegram alert**
+- **Проблема:** Якщо `MMEMBER_FALLBACK_PROXY_URL` не налаштований або проксі заблокований/несплачений, mmember робив сотні безрезультатних спроб без жодного сповіщення. Це могло тривати тижнями непоміченим.
+- **Рішення:** Після кожного `photo:sync` і `photo:cluster` — якщо `mmember attempted >= 5` і `succeeded = 0`, в Telegram відправляється `[ERROR] MMEMBER PROXY FAILURE` з підказкою перевірити `MMEMBER_FALLBACK_PROXY_URL`.
+- **Файли:** `src/services/photo/photo-sync.ts`, `src/services/photo/photo-cluster.ts`.
+
+**2. Зависання при завантаженні фото через residential proxy**
+- **Проблема:** Axios timeout (`PHOTO_HTTP_TIMEOUT_MS`) скидається при кожному отриманому байті. Residential проксі міг повільно стримити зображення (по кілька байт) і тримати з'єднання відкритим нескінченно. Photo sync "завис" на останніх кількох лотах назавжди.
+- **Рішення:** Додано `AbortController` з абсолютним wall-clock дедлайном. Незалежно від того чи приходять байти — запит примусово скасовується після `PHOTO_HTTP_TIMEOUT_MS` мілісекунд від старту.
+- **Файл:** `src/lib/http-client.ts`, функція `sendRouteRequest`.
+
 ### Критичні багфікси (2026-04-13)
 
 **1. HTTPS для inventoryv2 через проксі (Incapsula CONNECT tunneling)**
@@ -564,6 +576,51 @@ docker compose run --rm \
 - `http404Count`, `lotsMissing`, `imagesPerMin` — контроль якості джерела/мережі.
 
 ## Діагностика та дебагування (2026-04-13)
+
+### Проблема: mmember proxy не працює (Telegram alert `MMEMBER PROXY FAILURE`)
+
+**Симптом:** В Telegram приходить `[ERROR] MMEMBER PROXY FAILURE: mmember: N attempts, 0 succeeded`.
+
+**Причина #1 — `MMEMBER_FALLBACK_PROXY_URL` не налаштований:**
+mmember.copart.com захищений Imperva Incapsula і блокує датацентрові IPs. Без residential proxy всі запити дають 403.
+
+**Рішення:**
+```bash
+MMEMBER_FALLBACK_PROXY_URL=http://USERNAME:PASSWORD@rp.scrapegw.com:6060
+```
+Після додавання — перезапустіть контейнер: `docker-compose restart app`.
+
+**Причина #2 — Проксі несплачений або credentials прострочені (407):**
+```bash
+# Перевірити прямо з сервера:
+curl --max-time 20 \
+  --proxy rp.scrapegw.com:6060 \
+  --proxy-user "USERNAME:PASSWORD" \
+  http://httpbin.org/ip
+```
+Якщо повертає `{"origin": "..."}` з residential IP — проксі робочий. Якщо 407 — перевірте баланс у провайдера.
+
+**Причина #3 — Проксі заблокований на mmember конкретно:**
+```bash
+curl --max-time 20 \
+  --proxy rp.scrapegw.com:6060 \
+  --proxy-user "USERNAME:PASSWORD" \
+  -X POST https://mmember.copart.com/lots-api/v1/lot-details \
+  -H "Content-Type: application/json" \
+  -H "User-Agent: MemberMobile/5 CFNetwork/3860.300.31 Darwin/25.2.0" \
+  -H "deviceid: 5FE63153-B6D9-458F-90FA-287A625BF6D4" \
+  -H "ins-sess: F81006D1-92C3-4F58-A623-4F52711D5C13" \
+  -d '{"lotNumber":46304476}'
+```
+Якщо повертає JSON з `lotImages` — все ок, alert міг бути одноразовим (черговий retry вирішить). Якщо 403 — проксі заблокований Incapsula, потрібен інший residential провайдер.
+
+### Проблема: Photo sync зависає на останніх кількох лотах
+
+**Симптом:** Progress зупиняється на `lotsRemaining: 5-10`, немає нових логів 5-15+ хвилин.
+
+**Причина:** До виправлення (2026-04-27) — axios timeout не спрацьовував при "повільному стримінгу" через residential proxy. Зафіксовано виправленням `AbortController` в `sendRouteRequest`.
+
+**Рішення (якщо стара версія):** Ctrl+C та запустити retry — ті ж лоти будуть оброблені знову. З поточною версією проблема більше не виникає.
 
 ### Проблема: Photo cluster worker зависає або таймаутиться
 
