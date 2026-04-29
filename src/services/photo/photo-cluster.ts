@@ -324,6 +324,12 @@ export async function runPhotoCluster(
         summary.totalMmemberFallbackAttempted >= 5 &&
         summary.totalMmemberFallbackOk === 0
       ) {
+        logger.error("mmember proxy failure detected", {
+          clusterRunId,
+          workerTotal,
+          attempted: summary.totalMmemberFallbackAttempted,
+          ok: summary.totalMmemberFallbackOk,
+        });
         await sendTelegramError(
           "MMEMBER PROXY FAILURE",
           new Error(

@@ -646,10 +646,13 @@ async function executePhotoSync(
     logMmemberStats(counters.mmemberFallbackAttempted, counters.mmemberFallbackOk);
 
     if (
-      env.telegram.sendErrorAlerts &&
       counters.mmemberFallbackAttempted >= 5 &&
       counters.mmemberFallbackOk === 0
     ) {
+      logger.error("mmember proxy failure detected", {
+        attempted: counters.mmemberFallbackAttempted,
+        ok: counters.mmemberFallbackOk,
+      });
       await sendTelegramError(
         "MMEMBER PROXY FAILURE",
         new Error(
