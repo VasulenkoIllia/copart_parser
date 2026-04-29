@@ -1430,6 +1430,14 @@ export async function markLotPhotoMissingOn404(
         next_photo_retry_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? MINUTE),
         last_photo_check_at = CURRENT_TIMESTAMP(3)
       WHERE lot_number = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+          WHERE li.lot_number = lot_number
+            AND li.check_status = 'ok'
+            AND li.is_full_size = 1
+            AND li.variant IN ('hd', 'full', 'unknown')
+        )
     `,
     [backoffMinutes, lotNumber]
   );
@@ -1449,6 +1457,14 @@ export async function markLotPhotoMissingTemporary(
         next_photo_retry_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? MINUTE),
         last_photo_check_at = CURRENT_TIMESTAMP(3)
       WHERE lot_number = ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM \`${env.mysql.databaseMedia}\`.\`lot_images\` li
+          WHERE li.lot_number = lot_number
+            AND li.check_status = 'ok'
+            AND li.is_full_size = 1
+            AND li.variant IN ('hd', 'full', 'unknown')
+        )
     `,
     [backoffMinutes, lotNumber]
   );
