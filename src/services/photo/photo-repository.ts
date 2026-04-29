@@ -440,7 +440,8 @@ export async function completePhotoRunSuccess(
           'imagesStoredHd', ?,
           'imagesStoredFull', ?,
           'mmemberFallbackAttempted', ?,
-          'mmemberFallbackOk', ?
+          'mmemberFallbackOk', ?,
+          'mmemberFallback407', ?
         )
       WHERE id = ?
     `,
@@ -466,6 +467,7 @@ export async function completePhotoRunSuccess(
       counters.imagesStoredFull,
       counters.mmemberFallbackAttempted,
       counters.mmemberFallbackOk,
+      counters.mmemberFallback407,
       runId,
     ]
   );
@@ -619,7 +621,15 @@ export async function fetchPhotoClusterRunSummary(
             )
           ),
           0
-        ) AS total_mmember_fallback_ok
+        ) AS total_mmember_fallback_ok,
+        COALESCE(
+          SUM(
+            CAST(
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.mmemberFallback407')), '0') AS UNSIGNED
+            )
+          ),
+          0
+        ) AS total_mmember_fallback_407
       FROM \`${env.mysql.databaseCore}\`.\`photo_runs\`
       WHERE cluster_run_id = ?
     `,
@@ -647,6 +657,7 @@ export async function fetchPhotoClusterRunSummary(
     totalEndpoint404Lots: Number(row?.total_endpoint_404_lots ?? 0),
     totalMmemberFallbackAttempted: Number(row?.total_mmember_fallback_attempted ?? 0),
     totalMmemberFallbackOk: Number(row?.total_mmember_fallback_ok ?? 0),
+    totalMmemberFallback407: Number(row?.total_mmember_fallback_407 ?? 0),
   };
 }
 

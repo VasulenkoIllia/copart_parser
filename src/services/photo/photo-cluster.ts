@@ -320,21 +320,19 @@ export async function runPhotoCluster(
         })),
       });
 
-      if (
-        summary.totalMmemberFallbackAttempted >= 5 &&
-        summary.totalMmemberFallbackOk === 0
-      ) {
-        logger.error("mmember proxy failure detected", {
+      if (summary.totalMmemberFallback407 >= 3) {
+        logger.error("mmember proxy auth failure detected (HTTP 407)", {
           clusterRunId,
           workerTotal,
           attempted: summary.totalMmemberFallbackAttempted,
           ok: summary.totalMmemberFallbackOk,
+          http407: summary.totalMmemberFallback407,
         });
         await sendTelegramError(
           "MMEMBER PROXY FAILURE",
           new Error(
-            `mmember: ${summary.totalMmemberFallbackAttempted} attempts across ${workerTotal} workers, 0 succeeded.\n` +
-              `Proxy may be misconfigured, unpaid, or blocked.\n` +
+            `mmember: ${summary.totalMmemberFallback407} requests returned HTTP 407 across ${workerTotal} workers.\n` +
+              `Proxy is unpaid, expired, or credentials are wrong.\n` +
               `Check MMEMBER_FALLBACK_PROXY_URL on the server.`
           )
         );

@@ -75,6 +75,7 @@ function createCounters(): PhotoRunCounters {
     endpoint404Lots: 0,
     mmemberFallbackAttempted: 0,
     mmemberFallbackOk: 0,
+    mmemberFallback407: 0,
   };
 }
 
@@ -412,9 +413,13 @@ async function processLot(
         counters.mmemberFallbackAttempted += 1;
       } catch (err) {
         counters.mmemberFallbackAttempted += 1;
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes("HTTP 407")) {
+          counters.mmemberFallback407 += 1;
+        }
         logger.warn("mmember fallback error", {
           lotNumber: candidate.lotNumber,
-          error: err instanceof Error ? err.message : String(err),
+          error: errMsg,
         });
       } finally {
         mmemberSemaphore.release();
@@ -645,19 +650,17 @@ async function executePhotoSync(
     await completePhotoRunSuccess(runId, counters);
     logMmemberStats(counters.mmemberFallbackAttempted, counters.mmemberFallbackOk);
 
-    if (
-      counters.mmemberFallbackAttempted >= 5 &&
-      counters.mmemberFallbackOk === 0
-    ) {
-      logger.error("mmember proxy failure detected", {
+    if (counters.mmemberFallback407 >= 3) {
+      logger.error("mmember proxy auth failure detected (HTTP 407)", {
         attempted: counters.mmemberFallbackAttempted,
         ok: counters.mmemberFallbackOk,
+        http407: counters.mmemberFallback407,
       });
       await sendTelegramError(
         "MMEMBER PROXY FAILURE",
         new Error(
-          `mmember: ${counters.mmemberFallbackAttempted} attempts, 0 succeeded.\n` +
-            `Proxy may be misconfigured, unpaid, or blocked.\n` +
+          `mmember: ${counters.mmemberFallback407} requests returned HTTP 407 (proxy auth failed).\n` +
+            `Proxy is unpaid, expired, or credentials are wrong.\n` +
             `Check MMEMBER_FALLBACK_PROXY_URL on the server.`
         )
       );

@@ -49,6 +49,7 @@ export interface PhotoRunCounters {
   endpoint404Lots: number;
   mmemberFallbackAttempted: number;
   mmemberFallbackOk: number;
+  mmemberFallback407: number;
 }
 
 export interface PhotoSyncRunSummary {
@@ -126,6 +127,7 @@ export interface PhotoClusterRunSummary {
   totalEndpoint404Lots: number;
   totalMmemberFallbackAttempted: number;
   totalMmemberFallbackOk: number;
+  totalMmemberFallback407: number;
 }
 
 export interface PhotoClusterRunResult extends PhotoClusterRunSummary {
